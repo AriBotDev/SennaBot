@@ -10,6 +10,7 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from ..economy_base import EconomyCog
+from ..status.injury_system import get_earning_multiplier
 
 # Default cooldowns and payouts
 DEFAULT_WORK_COOLDOWN = 60  # 60 seconds
@@ -42,36 +43,21 @@ class WorkCog(EconomyCog):
         if not await self.check_balance_challenge(interaction):
             return
             
-        # Check cooldown
-        can_work, remaining = self.check_cooldown(
-            interaction.guild.id, 
-            interaction.user, 
-            "work", 
-            DEFAULT_WORK_COOLDOWN
-        )
+        # Check cooldown using unified handler
+        if not await self.handle_cooldown(interaction, "work", DEFAULT_WORK_COOLDOWN):
+            return
         
-        if not can_work:
-            minutes, seconds = divmod(remaining, 60)
-            cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-            return await self.send_embed(
-                interaction, 
-                "Cooldown",
-                f"You cannot work for another **{cooldown_text}**.",
-                discord.Color.orange(), 
-                ephemeral=True
-            )
+        # Base wage
+        wage = random.randint(WORK_PAYOUT_MIN, WORK_PAYOUT_MAX)
+        
+        # Apply earning multiplier based on injury status
+        earning_multiplier = get_earning_multiplier(interaction.guild.id, interaction.user)
+        wage = int(wage * earning_multiplier)
         
         # Get bot settings (or use defaults if not available)
         critical_chance = DataService.get_bot_setting("critical_success_chance", CRITICAL_SUCCESS_CHANCE)
         min_multiplier = DataService.get_bot_setting("critical_multiplier_min", CRITICAL_MULTIPLIER_MIN)
         max_multiplier = DataService.get_bot_setting("critical_multiplier_max", CRITICAL_MULTIPLIER_MAX)
-        
-        # Base wage
-        wage = random.randint(WORK_PAYOUT_MIN, WORK_PAYOUT_MAX)
-        
-        # Apply earning multiplier based on injury status (to be implemented)
-        earning_multiplier = 1.0  # Default, will be replaced with actual implementation
-        wage = int(wage * earning_multiplier)
         
         # Check for critical success
         is_critical = random.randint(1, 100) <= critical_chance
@@ -92,14 +78,8 @@ class WorkCog(EconomyCog):
             title = "Work"
             color = discord.Color.green()
         
-        # Add injury status to message if injured
-        # This will be implemented when we add the injury system
-        
         # Update user's balance
         self.update_pockets(interaction.guild.id, interaction.user, wage)
-        
-        # Set cooldown
-        self.set_cooldown(interaction.guild.id, interaction.user, "work")
         
         # Send response
         await self.send_embed(interaction, title, message, color)

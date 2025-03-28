@@ -10,27 +10,19 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from ..economy_base import EconomyCog
+from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
 
 # Default cooldowns and payouts
 DEFAULT_CRIME_COOLDOWN = 75  # 75 seconds
 CRIME_PAYOUT_MIN = 15
 CRIME_PAYOUT_MAX = 35
-CRIME_FAIL_RATE = 51  # 51% chance to fail
 CRITICAL_SUCCESS_CHANCE = 2  # 2% chance
 CRITICAL_MULTIPLIER_MIN = 3  # 3x multiplier
 CRITICAL_MULTIPLIER_MAX = 5  # 5x multiplier
 
-# Failure outcome probabilities
-CRIME_DEATH_CHANCE = 15    # 15% chance for death on failure
-CRIME_INJURY_CHANCE = 65   # 65% chance for injury on failure
-# Remaining 20% is prison
-
 # Fine amounts
 FINE_MIN = 5
 FINE_MAX = 30
-
-# Death penalty
-DEATH_SAVINGS_PENALTY = 0.10  # 10% of savings
 
 @CommandRegistry.register_cog("economy")
 class CrimeCog(EconomyCog):
@@ -85,50 +77,28 @@ class CrimeCog(EconomyCog):
         if not await self.check_balance_challenge(interaction):
             return
             
-        # Check cooldown
-        can_crime, remaining = self.check_cooldown(
-            interaction.guild.id, 
-            interaction.user, 
-            "crime", 
-            DEFAULT_CRIME_COOLDOWN
-        )
+        # Check cooldown using the unified handler
+        if not await self.handle_cooldown(interaction, "crime", DEFAULT_CRIME_COOLDOWN):
+            return
         
-        if not can_crime:
-            minutes, seconds = divmod(remaining, 60)
-            cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-            return await self.send_embed(
-                interaction, 
-                "Cooldown",
-                f"You cannot commit a crime for another **{cooldown_text}**.",
-                discord.Color.orange(), 
-                ephemeral=True
-            )
-        
-        # Get fail rate (will be modified by injury status later)
-        fail_rate = CRIME_FAIL_RATE
+        # Get fail rate from injury system
+        fail_rate = get_fail_rate(interaction.guild.id, interaction.user, "crime")
         
         # Roll for success/failure
         if random.randint(1, 100) <= fail_rate:
             # Crime failed - determine outcome
             
-            # Temporary injury and prison modifiers (will be replaced by actual system)
-            death_chance_mod = 0
-            prison_chance_mod = 0
-            
-            # Calculate adjusted probabilities
-            modified_death_chance = CRIME_DEATH_CHANCE + death_chance_mod
-            modified_prison_chance = (100 - CRIME_DEATH_CHANCE - CRIME_INJURY_CHANCE) + prison_chance_mod
+            # Calculate adjusted probabilities using injury system
+            death_chance = get_outcome_chance("death", interaction.guild.id, interaction.user)
+            prison_chance = get_outcome_chance("prison", interaction.guild.id, interaction.user)
             
             # Calculate remaining percentage for injury
-            modified_injury_chance = max(0, 100 - modified_death_chance - modified_prison_chance)
+            injury_chance = max(0, 100 - death_chance - prison_chance)
             
             # Roll for outcome
             outcome_roll = random.randint(1, 100)
             
-            # Set cooldown regardless of outcome
-            self.set_cooldown(interaction.guild.id, interaction.user, "crime")
-            
-            if outcome_roll <= modified_death_chance:
+            if outcome_roll <= death_chance:
                 # Death outcome
                 pockets_before, savings_penalty, prison_tier = self.handle_death(
                     interaction.guild.id, 
@@ -156,20 +126,20 @@ class CrimeCog(EconomyCog):
                         discord.Color.dark_red()
                     )
                     
-            elif outcome_roll <= (modified_death_chance + modified_injury_chance):
+            elif outcome_roll <= (death_chance + injury_chance):
                 # Injury outcome
                 fine_amount = random.randint(FINE_MIN, FINE_MAX)
                 self.update_pockets(interaction.guild.id, interaction.user, -fine_amount)
                 
-                # Add an injury
-                # This will be implemented when we add the injury system
-                # For now, just use a placeholder injury tier
-                injury_tier = "Light Injury"
+                # Add an injury using injury system
+                from ..status.injury_system import add_injury, get_injury_status
+                add_injury(interaction.guild.id, interaction.user)
+                injury_status = get_injury_status(interaction.guild.id, interaction.user)
                 
                 return await self.send_embed(
                     interaction, 
-                    f"Crime Failed - {injury_tier}!",
-                    f"{self.get_response('injury', amount=fine_amount)}\n\nYour condition: **{injury_tier}**\n*You can walk it off :3*",
+                    f"Crime Failed - {injury_status['tier']}!",
+                    f"{self.get_response('injury', amount=fine_amount)}\n\nYour condition: **{injury_status['tier']}**\n*You can walk it off :3*",
                     discord.Color.red()
                 )
             else:
@@ -206,8 +176,9 @@ class CrimeCog(EconomyCog):
             # Base reward
             reward = random.randint(CRIME_PAYOUT_MIN, CRIME_PAYOUT_MAX)
             
-            # Apply earning multiplier (will be implemented with injury system)
-            earning_multiplier = 1.0
+            # Apply earning multiplier from injury system
+            from ..status.injury_system import get_earning_multiplier
+            earning_multiplier = get_earning_multiplier(interaction.guild.id, interaction.user)
             reward = int(reward * earning_multiplier)
             
             # Get bot settings (or use defaults if not available)
@@ -241,9 +212,6 @@ class CrimeCog(EconomyCog):
             
             # Update user's balance
             self.update_pockets(interaction.guild.id, interaction.user, reward)
-            
-            # Set cooldown
-            self.set_cooldown(interaction.guild.id, interaction.user, "crime")
             
             # Send response
             await self.send_embed(interaction, title, success_msg, color)

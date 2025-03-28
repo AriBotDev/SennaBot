@@ -10,24 +10,16 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from ..economy_base import EconomyCog
+from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
 
 # Default cooldowns and rob settings
 DEFAULT_ROB_COOLDOWN = 300  # 300 seconds
 ROB_VICTIM_COOLDOWN = 600   # 10 minutes protection for victims
-ROB_FAIL_RATE = 55          # 55% chance to fail
 ROB_MIN_AMOUNT = 15         # Minimum amount stolen on success
-
-# Failure outcome probabilities
-ROB_DEATH_CHANCE = 15    # 15% chance for death on failure
-ROB_INJURY_CHANCE = 65   # 65% chance for injury on failure
-# Remaining 20% is prison
 
 # Fine amounts
 FINE_MIN = 5
 FINE_MAX = 30
-
-# Death penalty
-DEATH_SAVINGS_PENALTY = 0.10  # 10% of savings
 
 @CommandRegistry.register_cog("economy")
 class RobCog(EconomyCog):
@@ -126,50 +118,28 @@ class RobCog(EconomyCog):
                 ephemeral=True
             )
         
-        # Check cooldown
-        can_rob, remaining = self.check_cooldown(
-            interaction.guild.id, 
-            interaction.user, 
-            "rob", 
-            DEFAULT_ROB_COOLDOWN
-        )
+        # Check cooldown using unified handler
+        if not await self.handle_cooldown(interaction, "rob", DEFAULT_ROB_COOLDOWN):
+            return
         
-        if not can_rob:
-            minutes, seconds = divmod(remaining, 60)
-            cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-            return await self.send_embed(
-                interaction, 
-                "Cooldown",
-                f"You cannot rob another user for another **{cooldown_text}**.",
-                discord.Color.orange(), 
-                ephemeral=True
-            )
-        
-        # Get fail rate (will be modified by injury status later)
-        fail_rate = ROB_FAIL_RATE
+        # Get fail rate from injury system
+        fail_rate = get_fail_rate(interaction.guild.id, interaction.user, "rob")
         
         # Roll for success/failure
         if random.randint(1, 100) <= fail_rate:
             # Rob failed - determine outcome
             
-            # Temporary injury and prison modifiers (will be replaced by actual system)
-            death_chance_mod = 0
-            prison_chance_mod = 0
-            
-            # Calculate adjusted probabilities
-            modified_death_chance = ROB_DEATH_CHANCE + death_chance_mod
-            modified_prison_chance = (100 - ROB_DEATH_CHANCE - ROB_INJURY_CHANCE) + prison_chance_mod
+            # Calculate adjusted probabilities using injury system
+            death_chance = get_outcome_chance("death", interaction.guild.id, interaction.user)
+            prison_chance = get_outcome_chance("prison", interaction.guild.id, interaction.user)
             
             # Calculate remaining percentage for injury
-            modified_injury_chance = max(0, 100 - modified_death_chance - modified_prison_chance)
+            injury_chance = max(0, 100 - death_chance - prison_chance)
             
             # Roll for outcome
             outcome_roll = random.randint(1, 100)
             
-            # Set cooldown regardless of outcome
-            self.set_cooldown(interaction.guild.id, interaction.user, "rob")
-            
-            if outcome_roll <= modified_death_chance:
+            if outcome_roll <= death_chance:
                 # Death outcome
                 pockets_before, savings_penalty, prison_tier = self.handle_death(
                     interaction.guild.id, 
@@ -199,20 +169,20 @@ class RobCog(EconomyCog):
                         extra_mentions=[target]
                     )
                     
-            elif outcome_roll <= (modified_death_chance + modified_injury_chance):
+            elif outcome_roll <= (death_chance + injury_chance):
                 # Injury outcome
                 fine_amount = random.randint(FINE_MIN, FINE_MAX)
                 self.update_pockets(interaction.guild.id, interaction.user, -fine_amount)
                 
-                # Add an injury
-                # This will be implemented when we add the injury system
-                # For now, just use a placeholder injury tier
-                injury_tier = "Light Injury"
+                # Add an injury using injury system
+                from ..status.injury_system import add_injury, get_injury_status
+                add_injury(interaction.guild.id, interaction.user)
+                injury_status = get_injury_status(interaction.guild.id, interaction.user)
                 
                 return await self.send_embed(
                     interaction, 
-                    f"Robbery Failed - {injury_tier}!",
-                    f"{self.get_response('rob_injury', amount=fine_amount, target=target.mention)}\n\nYour condition: **{injury_tier}**\n*You can walk it off :3*",
+                    f"Robbery Failed - {injury_status['tier']}!",
+                    f"{self.get_response('rob_injury', amount=fine_amount, target=target.mention)}\n\nYour condition: **{injury_status['tier']}**\n*You can walk it off :3*",
                     discord.Color.red(),
                     extra_mentions=[target]
                 )
@@ -251,7 +221,6 @@ class RobCog(EconomyCog):
             
             if target_pockets <= 5:
                 # Target has almost nothing, not worth stealing
-                self.set_cooldown(interaction.guild.id, interaction.user, "rob")
                 return await self.send_embed(
                     interaction, 
                     "Robbery Attempt",
@@ -273,9 +242,6 @@ class RobCog(EconomyCog):
             # Update balances
             self.update_pockets(interaction.guild.id, interaction.user, stolen)
             self.update_pockets(interaction.guild.id, target, -stolen)
-            
-            # Set cooldown
-            self.set_cooldown(interaction.guild.id, interaction.user, "rob")
             
             # Set last robbed timestamp for the target
             self.set_last_robbed(interaction.guild.id, target)

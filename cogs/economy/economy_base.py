@@ -135,3 +135,32 @@ class EconomyCog(BotCog):
             return True, 0
         
         return False, cooldown_time - elapsed
+        
+    async def handle_cooldown(self, interaction, command_name, cooldown_time, ephemeral=True):
+        """
+        Unified cooldown handler that checks and sets cooldowns.
+        Returns True if command can proceed, False if on cooldown.
+        """
+        # Check cooldown
+        can_use, remaining = self.check_cooldown(
+            interaction.guild.id, 
+            interaction.user, 
+            command_name, 
+            cooldown_time
+        )
+        
+        if not can_use:
+            minutes, seconds = divmod(remaining, 60)
+            cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+            await self.send_embed(
+                interaction, 
+                "Cooldown",
+                f"You cannot use this command for another **{cooldown_text}**.",
+                discord.Color.orange(), 
+                ephemeral=ephemeral
+            )
+            return False
+        
+        # If not on cooldown, set a new cooldown and return True
+        self.set_cooldown(interaction.guild.id, interaction.user, command_name)
+        return True
