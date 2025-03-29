@@ -41,19 +41,22 @@ class BalanceChallengeManager:
         self.debug = DebugTools.get_debugger("balance_challenge_manager")
     
     def is_in_challenge(self, user_id: int) -> bool:
-        """Check if a user is currently in an active challenge"""
-        return user_id in self.active_challenges
-    
+        """Check if a user is currently in an active challenge with proper locking."""
+        with threading.Lock():  # Add a lock for thread safety
+            return user_id in self.active_challenges
+        
     def add_to_challenge(self, user_id: int, guild_id: int) -> None:
-        """Mark a user as being in a challenge"""
-        self.active_challenges[user_id] = guild_id
-        self.debug.log(f"Added user {user_id} to active challenges in guild {guild_id}")
-    
+        """Mark a user as being in a challenge with proper locking."""
+        with threading.Lock():  # Add a lock for thread safety
+            self.active_challenges[user_id] = guild_id
+            self.debug.log(f"Added user {user_id} to active challenges in guild {guild_id}")
+        
     def remove_from_challenge(self, user_id: int) -> None:
-        """Remove user from active challenges"""
-        if user_id in self.active_challenges:
-            self.debug.log(f"Removed user {user_id} from active challenges")
-            del self.active_challenges[user_id]
+        """Remove user from active challenges with proper locking."""
+        with threading.Lock():  # Add a lock for thread safety
+            if user_id in self.active_challenges:
+                self.debug.log(f"Removed user {user_id} from active challenges")
+                del self.active_challenges[user_id]
     
     def should_trigger_challenge(self, guild_id: int, user: discord.Member) -> bool:
         """Check if user should face the balance challenge"""

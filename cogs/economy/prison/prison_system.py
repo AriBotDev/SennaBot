@@ -191,18 +191,24 @@ def send_to_prison(guild_id: int, user_id: str, tier: str = None, duration: int 
 
 def release_from_prison(guild_id: int, user_id: int) -> bool:
     """
-    Release a user from prison.
+    Release a user from prison with proper error handling.
     Returns True if the user was in prison and was released, False otherwise.
     """
-    guild_data = DataService.load_guild_data(guild_id)
-    user_key = str(user_id)
-    
-    if user_key not in guild_data or not guild_data[user_key].get("prison"):
+    try:
+        guild_data = DataService.load_guild_data(guild_id)
+        user_key = str(user_id)
+        
+        if user_key not in guild_data or not guild_data[user_key].get("prison"):
+            return False
+        
+        guild_data[user_key]["prison"] = None
+        DataService.save_guild_data(guild_id, guild_data)
+        debug.log(f"Released user {user_id} from prison in guild {guild_id}")
+        return True
+    except Exception as e:
+        debug = DebugTools.get_debugger("prison_system")
+        debug.log(f"Error releasing from prison: {e}")
         return False
-    
-    guild_data[user_key]["prison"] = None
-    DataService.save_guild_data(guild_id, guild_data)
-    return True
 
 def extend_prison_time(guild_id: int, user_id: int, additional_time: int) -> bool:
     """

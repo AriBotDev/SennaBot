@@ -208,14 +208,15 @@ class DataService:
     
     @classmethod
     def save_guild_data(cls, guild_id, data):
-        """Save data for a specific guild with locking."""
+        """Save data for a specific guild with proper locking."""
         guild_id = str(guild_id)
         debug.log(f"Saving guild data for {guild_id}")
         
-        # Acquire lock for this guild
+        # Use context manager for clean lock handling
         with cls.get_guild_lock(guild_id):
-            # Update cache
+            # Update cache with a copy to avoid reference issues
             cls._guild_cache[guild_id] = data.copy()
+            cls._cache_timestamps[guild_id] = time.time()
             
             # Save to file
             file_path = os.path.join(cls.GUILDS_DIR, f"{guild_id}.json")

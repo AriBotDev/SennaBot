@@ -8,6 +8,7 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.debug_tools import DebugTools
+from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
 
 # Setup debugger
@@ -26,6 +27,7 @@ class MorticianCommands(EconomyCog):
         return [self.see_mortician]
     
     @app_commands.command(name="see_mortician", description="Visit the Mortician's Wing to heal your injuries.")
+    @command_error_handler
     async def see_mortician(self, interaction: discord.Interaction):
         """Visit the mortician to heal injuries."""
         # Check if user is in prison

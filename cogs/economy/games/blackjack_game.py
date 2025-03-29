@@ -637,7 +637,17 @@ class BlackjackGameView(ui.View):
                 try:
                     await self.game_message.delete()
                 except Exception as e:
-                    debug.log(f"Error deleting game message during cleanup: {e}")
+                    debug.log(f"Error deleting game message: {e}")
+                    # Don't throw, continue cleanup
+            
+            # Clear any stored references
+            for player_id in self.turn_notifications:
+                try:
+                    # Stop all pending notifications
+                    notification = self.turn_notifications[player_id]
+                    notification.stop()
+                except Exception as e:
+                    debug.log(f"Error stopping notification: {e}")
         except Exception as e:
             debug.log(f"Error in game cleanup: {e}")
     
