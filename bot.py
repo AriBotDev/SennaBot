@@ -205,15 +205,8 @@ async def on_guild_remove(guild):
 @bot.event
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     """Global error handler for app commands."""
-    await ErrorHandler.handle_command_error(interaction, error)
-
-# Run the bot
-if __name__ == "__main__":
     try:
-        bot.run(config.DISCORD_BOT_TOKEN)
+        await ErrorHandler.handle_command_error(interaction, error)
     except Exception as e:
-        logger.critical(f"Fatal error running bot: {e}")
-        debug.log(f"Fatal error running bot: {e}")
-    finally:
-        # Shutdown Athena framework
-        Athena.shutdown()
+        logger.error(f"Error handling app command error: {e}")
+        ErrorHandler.handle_event_error("on_app_command_error", e, {"command": interaction.command})

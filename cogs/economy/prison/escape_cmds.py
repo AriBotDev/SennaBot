@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from athena.cmd_registry import CommandRegistry
 from athena.debug_tools import DebugTools
 from athena.data_service import DataService
-from athena.error_handler import ErrorHandler
+from athena.error_handler import command_error_handler
 
 debug = DebugTools.get_debugger("escape_cmds")
 
@@ -92,6 +92,7 @@ class EscapeCommands(commands.Cog):
             return pockets_before, savings_penalty, None  # No prison
     
     @app_commands.command(name="escape", description="Attempt to escape from prison.")
+    @command_error_handler
     async def escape(self, interaction: discord.Interaction):
         """Attempt to escape from prison."""
         try:

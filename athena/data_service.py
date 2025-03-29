@@ -11,8 +11,6 @@ import threading
 
 # Setup debugger
 debug = DebugTools.get_debugger("data_service")
-_cache_timestamps = {}
-CACHE_TTL = 300  # 5 minutes
 
 class DataService:
     """
@@ -26,12 +24,16 @@ class DataService:
     CONFIG_DIR = os.path.join(DATA_DIR, "config")
     RESPONSES_DIR = os.path.join(DATA_DIR, "responses")
     
+    # Cache TTL in seconds
+    CACHE_TTL = 300  # 5 minutes
+    
     # In-memory caches
     _guild_cache = {}
     _response_cache = {}
     _config_cache = {}
     _guild_locks = {}
-
+    _cache_timestamps = {}  # Track when cache entries were added/updated
+    
     @classmethod
     def get_guild_lock(cls, guild_id):
         """Get or create a lock for a specific guild."""
@@ -48,6 +50,9 @@ class DataService:
         
         # Pre-load config data
         cls._load_bot_settings()
+        
+        # Schedule periodic cache cleanup
+        cls._schedule_cache_cleanup()
         
         debug.log("DataService initialization complete")
     
@@ -75,8 +80,10 @@ class DataService:
             }
             cls._safe_save_json(settings_file, default_settings)
             cls._config_cache["bot_settings"] = default_settings
+            cls._cache_timestamps["bot_settings"] = time.time()
         else:
             cls._config_cache["bot_settings"] = cls._safe_load_json(settings_file, {})
+            cls._cache_timestamps["bot_settings"] = time.time()
     
     @classmethod
     def _safe_load_json(cls, file_path, default=None):
@@ -162,22 +169,33 @@ class DataService:
             debug.end_timer(f"save_json_{os.path.basename(file_path)}")
     
     @classmethod
+    def _schedule_cache_cleanup(cls):
+        """Schedule periodic cache cleanup to prevent memory leaks."""
+        # This would typically be done with asyncio.create_task or a background thread
+        # For demonstration, we'll leave the implementation hook here
+        debug.log("Cache cleanup scheduling placeholder implemented")
+        # In a real implementation, you would start a background task or thread here
+    
+    @classmethod
+    def _is_cache_valid(cls, cache_key):
+        """Check if a cache entry is still valid based on TTL."""
+        if cache_key not in cls._cache_timestamps:
+            return False
+            
+        current_time = time.time()
+        entry_time = cls._cache_timestamps.get(cache_key, 0)
+        
+        return (current_time - entry_time) < cls.CACHE_TTL
+    
+    @classmethod
     def load_guild_data(cls, guild_id, force_reload=False):
         """Load data for a specific guild with TTL caching."""
         guild_id = str(guild_id)
+        cache_key = guild_id
         debug.log(f"Loading guild data for {guild_id}")
         
-        current_time = time.time()
-        
-        # Check if cache is valid
-        cache_valid = (
-            guild_id in cls._guild_cache and
-            guild_id in cls._cache_timestamps and
-            current_time - cls._cache_timestamps[guild_id] < CACHE_TTL and
-            not force_reload
-        )
-        
-        if cache_valid:
+        # Check if cache is valid and not forcing reload
+        if not force_reload and guild_id in cls._guild_cache and cls._is_cache_valid(cache_key):
             debug.log(f"Using cached data for guild {guild_id}")
             return cls._guild_cache[guild_id].copy()  # Return a copy to avoid race conditions
         
@@ -187,7 +205,7 @@ class DataService:
         
         # Update cache and timestamp
         cls._guild_cache[guild_id] = data.copy()
-        cls._cache_timestamps[guild_id] = current_time
+        cls._cache_timestamps[cache_key] = time.time()
         
         return data
     
@@ -196,27 +214,32 @@ class DataService:
         """Invalidate cache for a specific guild or all guilds."""
         if guild_id:
             guild_id = str(guild_id)
+            cache_key = guild_id
             if guild_id in cls._guild_cache:
                 del cls._guild_cache[guild_id]
-                if guild_id in cls._cache_timestamps:
-                    del cls._cache_timestamps[guild_id]
+                if cache_key in cls._cache_timestamps:
+                    del cls._cache_timestamps[cache_key]
                 debug.log(f"Invalidated cache for guild {guild_id}")
         else:
             cls._guild_cache.clear()
-            cls._cache_timestamps.clear()
-            debug.log("Invalidated all data caches")
+            # Only clear guild-related timestamps
+            keys_to_remove = [k for k in cls._cache_timestamps if k in cls._guild_cache]
+            for k in keys_to_remove:
+                del cls._cache_timestamps[k]
+            debug.log("Invalidated all guild data caches")
     
     @classmethod
     def save_guild_data(cls, guild_id, data):
         """Save data for a specific guild with proper locking."""
         guild_id = str(guild_id)
+        cache_key = guild_id
         debug.log(f"Saving guild data for {guild_id}")
         
         # Use context manager for clean lock handling
         with cls.get_guild_lock(guild_id):
             # Update cache with a copy to avoid reference issues
             cls._guild_cache[guild_id] = data.copy()
-            cls._cache_timestamps[guild_id] = time.time()
+            cls._cache_timestamps[cache_key] = time.time()
             
             # Save to file
             file_path = os.path.join(cls.GUILDS_DIR, f"{guild_id}.json")
@@ -270,6 +293,13 @@ class DataService:
     @classmethod
     def get_bot_setting(cls, setting_name, default=None):
         """Get a specific bot setting from the config."""
+        # Check if config cache is still valid
+        if not cls._is_cache_valid("bot_settings"):
+            # Reload settings if cache is stale
+            settings_file = os.path.join(cls.CONFIG_DIR, "bot_settings.json")
+            cls._config_cache["bot_settings"] = cls._safe_load_json(settings_file, {})
+            cls._cache_timestamps["bot_settings"] = time.time()
+            
         return cls._config_cache.get("bot_settings", {}).get(setting_name, default)
     
     @classmethod
@@ -278,6 +308,7 @@ class DataService:
         settings = cls._config_cache.get("bot_settings", {})
         settings[setting_name] = value
         cls._config_cache["bot_settings"] = settings
+        cls._cache_timestamps["bot_settings"] = time.time()  # Update timestamp
         
         # Save to file
         settings_file = os.path.join(cls.CONFIG_DIR, "bot_settings.json")
@@ -286,25 +317,57 @@ class DataService:
     @classmethod
     def load_response_data(cls, category):
         """Load response data for a specific category."""
-        if category in cls._response_cache:
-            return cls._response_cache[category]
+        cache_key = f"response_{category}"
+        
+        # Check if cache is valid
+        if cache_key in cls._response_cache and cls._is_cache_valid(cache_key):
+            return cls._response_cache[cache_key]
         
         file_path = os.path.join(cls.RESPONSES_DIR, f"{category}_responses.json")
         data = cls._safe_load_json(file_path, {})
         
         # Cache and return data
-        cls._response_cache[category] = data
+        cls._response_cache[cache_key] = data
+        cls._cache_timestamps[cache_key] = time.time()
         return data
     
     @classmethod
     def clear_cache(cls, guild_id=None):
         """Clear the cache for a specific guild or all guilds."""
         if guild_id:
-            guild_id = str(guild_id)
-            if guild_id in cls._guild_cache:
-                del cls._guild_cache[guild_id]
-                debug.log(f"Cleared cache for guild {guild_id}")
+            cls.invalidate_cache(guild_id)
         else:
+            # Clear all caches with proper timestamp handling
             cls._guild_cache.clear()
             cls._response_cache.clear()
+            cls._config_cache.clear()
+            cls._cache_timestamps.clear()
             debug.log("Cleared all data caches")
+    
+    @classmethod
+    def cleanup_expired_cache(cls):
+        """Remove expired cache entries to prevent memory bloat."""
+        current_time = time.time()
+        expired_keys = []
+        
+        # Find expired entries
+        for key, timestamp in cls._cache_timestamps.items():
+            if (current_time - timestamp) >= cls.CACHE_TTL:
+                expired_keys.append(key)
+                
+                # Handle different cache types
+                if key in cls._guild_cache:
+                    del cls._guild_cache[key]
+                elif key.startswith("response_"):
+                    response_key = key[9:]  # Remove "response_" prefix
+                    if response_key in cls._response_cache:
+                        del cls._response_cache[response_key]
+                elif key in cls._config_cache:
+                    del cls._config_cache[key]
+        
+        # Remove timestamps for expired entries
+        for key in expired_keys:
+            del cls._cache_timestamps[key]
+        
+        if expired_keys:
+            debug.log(f"Cleaned up {len(expired_keys)} expired cache entries")

@@ -10,6 +10,7 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.debug_tools import DebugTools
+from athena.error_handler import command_error_handler
 
 # Setup debugger
 debug = DebugTools.get_debugger("injury_system")
@@ -257,6 +258,7 @@ class InjuryCommands(commands.Cog):
         return [self.status]
     
     @app_commands.command(name="status", description="Check your injury status and other conditions.")
+    @command_error_handler
     async def status(self, interaction: discord.Interaction, member: discord.Member = None):
         """Check your or another member's status and condition."""
         # Default to the user if no member specified

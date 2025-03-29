@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from athena.cmd_registry import CommandRegistry
 from athena.debug_tools import DebugTools
 from athena.data_service import DataService
-from athena.error_handler import ErrorHandler
+from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
 from .prison_system import (
     select_prison_tier, format_time, get_escape_chance_modifier, 
@@ -43,6 +43,7 @@ class BreakoutCommands(EconomyCog):
     
     @app_commands.command(name="breakout", description="Attempt to break another player out of prison.")
     @app_commands.describe(target="The player you want to break out of prison")
+    @command_error_handler
     async def breakout(self, interaction: discord.Interaction, target: discord.Member):
         """Attempt to break another player out of prison."""
         # Check if initiator is in prison
