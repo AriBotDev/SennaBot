@@ -356,6 +356,7 @@ SennaBot/
 │   └── economy/
 │       ├── economy_module.py # Economy module initialization
 │       ├── economy_base.py   # Base economy cog with shared economy functions
+│       ├── economy_constants.py   # Economy consistent constants
 │       ├── activities/       # Income-generating commands
 │       │   ├── activities_module.py
 │       │   ├── work_cmds.py
