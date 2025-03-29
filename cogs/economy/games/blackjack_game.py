@@ -9,6 +9,7 @@ from discord import app_commands, ui
 from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
+from athena.debug_tools import DebugTools
 from ..economy_base import EconomyCog
 
 # Card suits and values
@@ -20,6 +21,9 @@ CARD_FACES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 
 # Track active games
 ACTIVE_GAMES = {}  # (player_id, guild_id) -> game instance
+
+# Setup debugger
+debug = DebugTools.get_debugger("blackjack_game")
 
 class BlackjackGame:
     """Manages a blackjack game between two players."""
@@ -326,7 +330,7 @@ class BlackjackInviteView(ui.View):
                     view=None
                 )
         except Exception as e:
-            print(f"Error in BlackjackInviteView on_timeout: {e}")
+            debug.log(f"Error in BlackjackInviteView on_timeout: {e}")
 
 class PlayerGameControlView(ui.View):
     """Game control view for a player in blackjack."""
@@ -481,11 +485,36 @@ class BlackjackGameView(ui.View):
         self.turn_messages = []   # Keep track of turn notification messages for cleanup
         self.turn_notifications = {}  # Track active turn notifications by player ID
         self.finished = False  # Flag to track if the game was properly finished
+        self.last_activity = time.time()  # Track last activity time
+    
+    def register_game(self):
+        """Register this game in active games tracking."""
+        player_key = f"{self.game.initiator.id}-{self.channel.guild.id}"
+        opponent_key = f"{self.game.opponent.id}-{self.channel.guild.id}"
+        ACTIVE_GAMES[player_key] = self.game
+        ACTIVE_GAMES[opponent_key] = self.game
+        debug.log(f"Registered game for {player_key} and {opponent_key}")
+
+    def unregister_game(self):
+        """Remove this game from active games tracking."""
+        try:
+            player_key = f"{self.game.initiator.id}-{self.channel.guild.id}"
+            opponent_key = f"{self.game.opponent.id}-{self.channel.guild.id}"
+            if player_key in ACTIVE_GAMES:
+                del ACTIVE_GAMES[player_key]
+            if opponent_key in ACTIVE_GAMES:
+                del ACTIVE_GAMES[opponent_key]
+            debug.log(f"Unregistered game for {player_key} and {opponent_key}")
+        except Exception as e:
+            debug.log(f"Error unregistering game: {e}")
     
     async def update_public_display(self):
         """Update the public game message in the channel."""
         if not self.game_message:
             return
+        
+        # Update last activity time
+        self.last_activity = time.time()
             
         # Create public embed that shows game state without revealing hidden cards
         public_embed = discord.Embed(
@@ -539,7 +568,7 @@ class BlackjackGameView(ui.View):
         try:
             await self.game_message.edit(embed=public_embed)
         except Exception as e:
-            print(f"Error updating public game display: {e}")
+            debug.log(f"Error updating public game display: {e}")
     
     async def next_player_turn(self):
         """Initiates the next player's turn."""
@@ -580,7 +609,7 @@ class BlackjackGameView(ui.View):
                     # Continue to next player's turn
                     await self.next_player_turn()
         except Exception as e:
-            print(f"Error sending turn notification: {e}")
+            debug.log(f"Error sending turn notification: {e}")
 
     async def cleanup_messages(self):
         """Clean up all turn notification messages."""
@@ -588,10 +617,28 @@ class BlackjackGameView(ui.View):
             try:
                 await message.delete()
             except Exception as e:
-                print(f"Error deleting message: {e}")
+                debug.log(f"Error deleting message: {e}")
         
         # Clear the list after deletion attempts
         self.turn_messages = []
+    
+    async def cleanup_game(self, message=None):
+        """Clean up all resources for this game."""
+        try:
+            # Unregister from active games
+            self.unregister_game()
+            
+            # Clean up turn messages
+            await self.cleanup_messages()
+            
+            # Clean up game message if not already handled
+            if self.game_message and not message:
+                try:
+                    await self.game_message.delete()
+                except Exception as e:
+                    debug.log(f"Error deleting game message during cleanup: {e}")
+        except Exception as e:
+            debug.log(f"Error in game cleanup: {e}")
     
     async def handle_game_over(self, interaction):
         """Handle the end of the game."""
@@ -647,15 +694,8 @@ class BlackjackGameView(ui.View):
             inline=False
         )
 
-        # Clean up all turn messages first
-        await self.cleanup_messages()
-
-        # Delete the original game message
-        if self.game_message:
-            try:
-                await self.game_message.delete()
-            except Exception as e:
-                print(f"Error deleting game message: {e}")
+        # Clean up all resources
+        await self.cleanup_game(interaction.message)
         
         # Send a fresh result message
         try:
@@ -664,15 +704,7 @@ class BlackjackGameView(ui.View):
                 embed=result_embed
             )
         except Exception as e:
-            print(f"Error sending final result message: {e}")
-        
-        # Remove from active games
-        player_key = f"{initiator.id}-{guild_id}"
-        opponent_key = f"{opponent.id}-{guild_id}"
-        if player_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[player_key]
-        if opponent_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[opponent_key]
+            debug.log(f"Error sending final result message: {e}")
         
         self.stop()
     
@@ -691,22 +723,15 @@ class BlackjackGameView(ui.View):
         guild_id = self.channel.guild.id
         self.cog.update_pockets(guild_id, self.game.winner, self.game.pot)
         
-        # Clean up all turn messages
-        await self.cleanup_messages()
-        
         # Create timeout embed
         timeout_embed = discord.Embed(
             title="Blackjack Game Timed Out",
-            description=f"The game has ended due to inactivity...(lame)",
+            description=f"The game has ended due to inactivity...(lame)\n\n**{self.game.winner.display_name}** wins by default!",
             color=discord.Color.red()
         )
         
-        # Delete the original game message
-        if self.game_message:
-            try:
-                await self.game_message.delete()
-            except Exception as e:
-                print(f"Error deleting game message on timeout: {e}")
+        # Clean up all resources
+        await self.cleanup_game()
         
         # Send fresh timeout message
         try:
@@ -715,34 +740,22 @@ class BlackjackGameView(ui.View):
                 embed=timeout_embed
             )
         except Exception as e:
-            print(f"Error sending timeout message: {e}")
-        
-        # Remove from active games
-        player_key = f"{self.game.initiator.id}-{guild_id}"
-        opponent_key = f"{self.game.opponent.id}-{guild_id}"
-        if player_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[player_key]
-        if opponent_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[opponent_key]
+            debug.log(f"Error sending timeout message: {e}")
         
         self.stop()
     
     async def cancel_game(self):
         """Cancel the game and return bets to players."""
-        # Clean up all turn messages
-        await self.cleanup_messages()
-        
-        # Delete the original game message
-        if self.game_message:
-            try:
-                await self.game_message.delete()
-            except Exception as e:
-                print(f"Error deleting game message on cancel: {e}")
+        # Mark the game as finished properly
+        self.finished = True
         
         # Return bets to players
         guild_id = self.channel.guild.id
         self.cog.update_pockets(guild_id, self.game.initiator, self.game.bet)
         self.cog.update_pockets(guild_id, self.game.opponent, self.game.bet)
+        
+        # Clean up all resources
+        await self.cleanup_game()
         
         # Send cancellation message
         try:
@@ -755,15 +768,7 @@ class BlackjackGameView(ui.View):
                 )
             )
         except Exception as e:
-            print(f"Error sending cancellation message: {e}")
-        
-        # Remove from active games
-        player_key = f"{self.game.initiator.id}-{guild_id}"
-        opponent_key = f"{self.game.opponent.id}-{guild_id}"
-        if player_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[player_key]
-        if opponent_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[opponent_key]
+            debug.log(f"Error sending cancellation message: {e}")
     
     async def on_timeout(self):
         """Handle timeout of the game view."""
@@ -778,47 +783,6 @@ class BlackjackGameView(ui.View):
             await self.cancel_game()
         except Exception as e:
             debug.log(f"Error in timeout handler: {e}")
-
-    async def cancel_game(self):
-        """Cancel the game and return bets to players."""
-        # Set flag to prevent double cleanup
-        self.finished = True
-        
-        # Clean up all turn messages
-        await self.cleanup_messages()
-        
-        # Delete the original game message
-        if self.game_message:
-            try:
-                await self.game_message.delete()
-            except Exception as e:
-                debug.log(f"Error deleting game message on cancel: {e}")
-        
-        # Return bets to players
-        guild_id = self.channel.guild.id
-        self.cog.update_pockets(guild_id, self.game.initiator, self.game.bet)
-        self.cog.update_pockets(guild_id, self.game.opponent, self.game.bet)
-        
-        # Send cancellation message
-        try:
-            await self.channel.send(
-                content=f"❌ **BLACKJACK GAME CANCELLED** ❌\n{self.game.initiator.mention} vs {self.game.opponent.mention}",
-                embed=discord.Embed(
-                    title="Blackjack Game Cancelled",
-                    description=f"The game has been cancelled due to inactivity. Bets have been returned to the players.",
-                    color=discord.Color.red()
-                )
-            )
-        except Exception as e:
-            debug.log(f"Error sending cancellation message: {e}")
-        
-        # Remove from active games
-        player_key = f"{self.game.initiator.id}-{guild_id}"
-        opponent_key = f"{self.game.opponent.id}-{guild_id}"
-        if player_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[player_key]
-        if opponent_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[opponent_key]
 
 @CommandRegistry.register_cog("economy")
 class BlackjackCog(EconomyCog):
@@ -954,8 +918,7 @@ class BlackjackCog(EconomyCog):
                 game_view = BlackjackGameView(game, self, interaction.channel)
                 
                 # Register the active game
-                ACTIVE_GAMES[player_key] = game
-                ACTIVE_GAMES[opponent_key] = game
+                game_view.register_game()
                 
                 # Send the public game interface to the channel
                 game_embed = discord.Embed(
@@ -978,9 +941,9 @@ class BlackjackCog(EconomyCog):
                 # Wait for the game to complete
                 await game_view.wait()
                 
-                # Game is now complete (cleanup handled in handle_game_over)
+                # Game is now complete (cleanup handled in respective methods)
             except Exception as e:
-                print(f"Error in blackjack game: {e}")
+                debug.log(f"Error in blackjack game: {e}")
                 await interaction.followup.send(
                     embed=discord.Embed(
                         title="Blackjack Error",
@@ -1023,4 +986,4 @@ class BlackjackCog(EconomyCog):
                     )
                 )
             except Exception as e:
-                print(f"Error sending timeout followup: {e}")
+                debug.log(f"Error sending timeout followup: {e}")
