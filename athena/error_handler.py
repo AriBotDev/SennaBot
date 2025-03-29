@@ -7,6 +7,7 @@ import traceback
 import sys
 import asyncio
 import functools
+from discord.ext import commands
 from .debug_tools import DebugTools
 
 # Setup debugger
@@ -33,11 +34,18 @@ class ErrorHandler:
     # Reporting settings
     _report_to_owner = True
     _owner_id = None
+    _bot_instance = None
     
     @classmethod
     def set_owner_id(cls, owner_id):
         """Set the owner ID for error reporting."""
         cls._owner_id = owner_id
+    
+    @classmethod
+    def set_bot_instance(cls, bot):
+        """Set a bot instance to use for event error reporting."""
+        cls._bot_instance = bot
+        debug.log("Bot instance set for error reporting")
     
     @classmethod
     async def handle_command_error(cls, interaction, error):
@@ -160,7 +168,7 @@ class ErrorHandler:
         debug.log(f"Event error in {event_name}{context}: {error}\n{tb}")
         
         # Report to owner if enabled and we have a bot instance to use
-        if cls._report_to_owner and cls._owner_id and hasattr(cls, '_bot_instance'):
+        if cls._report_to_owner and cls._owner_id and cls._bot_instance:
             # Create error report
             error_report = (
                 f"**Error in event `{event_name}`**\n"
@@ -281,71 +289,64 @@ class ErrorHandler:
         
         debug.log(f"Failed to send error to owner after {max_retries} attempts")
         return False
-    
-    @classmethod
-    def set_bot_instance(cls, bot):
-        """Set a bot instance to use for event error reporting."""
-        cls._bot_instance = bot
-        debug.log("Bot instance set for error reporting")
-    
-    def command_error_handler(func):
-        """Decorator for standardized command error handling."""
-        @functools.wraps(func)
-        async def wrapper(self, interaction, *args, **kwargs):
+
+def command_error_handler(func):
+    """Decorator for standardized command error handling."""
+    @functools.wraps(func)
+    async def wrapper(self, interaction, *args, **kwargs):
+        try:
+            return await func(self, interaction, *args, **kwargs)
+        except Exception as e:
+            # Get command name
+            command_name = func.__name__
+            
+            # Log the error
+            if hasattr(self, 'debug'):
+                self.debug.log(f"Error in {command_name}: {e}")
+            else:
+                debug_log = DebugTools.get_debugger("error_handler")
+                debug_log.log(f"Error in {command_name}: {e}")
+            
             try:
-                return await func(self, interaction, *args, **kwargs)
-            except Exception as e:
-                # Get command name
-                command_name = func.__name__
-                
-                # Log the error
-                if hasattr(self, 'debug'):
-                    self.debug.log(f"Error in {command_name}: {e}")
+                # Send error message to user
+                if hasattr(self, 'send_embed'):
+                    await self.send_embed(
+                        interaction,
+                        "Error",
+                        "An error occurred while processing this command. The bot owner has been notified.",
+                        discord.Color.red(),
+                        ephemeral=True
+                    )
                 else:
-                    debug = DebugTools.get_debugger("error_handler")
-                    debug.log(f"Error in {command_name}: {e}")
-                
-                try:
-                    # Send error message to user
-                    if hasattr(self, 'send_embed'):
-                        await self.send_embed(
-                            interaction,
-                            "Error",
-                            "An error occurred while processing this command. The bot owner has been notified.",
-                            discord.Color.red(),
-                            ephemeral=True
-                        )
-                    else:
-                        if interaction.response.is_done():
-                            await interaction.followup.send(
-                                "An error occurred while processing this command.",
-                                ephemeral=True
-                            )
-                        else:
-                            await interaction.response.send_message(
-                                "An error occurred while processing this command.",
-                                ephemeral=True
-                            )
-                except Exception as response_error:
-                    # If response failed, try followup as a last resort
-                    try:
+                    if interaction.response.is_done():
                         await interaction.followup.send(
                             "An error occurred while processing this command.",
                             ephemeral=True
                         )
-                    except:
-                        debug.log("Failed to send any error response to user")
-                
-                # Report to owner
-                from athena.error_handler import ErrorHandler
-                if hasattr(self, 'bot'):
-                    ErrorHandler._report_to_owner_from_cog(self, interaction, e, command_name)
-                else:
-                    ErrorHandler.handle_command_error(interaction, e)
-                
-                # Rethrow specific exceptions we want to bubble up
-                if isinstance(e, (commands.CommandNotFound, commands.MissingRequiredArgument)):
-                    raise
-        
-        return wrapper
+                    else:
+                        await interaction.response.send_message(
+                            "An error occurred while processing this command.",
+                            ephemeral=True
+                        )
+            except Exception as response_error:
+                # If response failed, try followup as a last resort
+                try:
+                    await interaction.followup.send(
+                        "An error occurred while processing this command.",
+                        ephemeral=True
+                    )
+                except:
+                    pass
+            
+            # Report to owner
+            from athena.error_handler import ErrorHandler
+            if hasattr(self, 'bot'):
+                ErrorHandler._report_to_owner_from_cog(self, interaction, e, command_name)
+            else:
+                ErrorHandler.handle_command_error(interaction, e)
+            
+            # Rethrow specific exceptions we want to bubble up
+            if isinstance(e, (commands.CommandNotFound, commands.MissingRequiredArgument)):
+                raise
     
+    return wrapper

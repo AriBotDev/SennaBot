@@ -5,6 +5,7 @@ Provides the blackjack command for gambling.
 import discord
 import random
 import asyncio
+import time  # Add this import
 from discord import app_commands, ui
 from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
@@ -642,71 +643,82 @@ class BlackjackGameView(ui.View):
     
     async def handle_game_over(self, interaction):
         """Handle the end of the game."""
-        guild_id = interaction.guild.id
-        initiator = self.game.initiator
-        opponent = self.game.opponent
-        bet = self.game.bet
-        pot = self.game.pot
-        
-        # Mark the game as finished properly
-        self.finished = True
-        
-        # Determine payouts
-        if self.game.winner is None:
-            # It's a tie, return the bet to both players
-            message = f"The game ended in a tie. Both players get their **{bet}** Medals back."
-            self.cog.update_pockets(guild_id, initiator, bet)
-            self.cog.update_pockets(guild_id, opponent, bet)
-        else:
-            # Winner takes all
-            if self.game.blackjack_bonus:
-                bonus = int(bet * 0.5)  # 50% bonus for blackjack
-                total_winnings = pot + bonus
-                message = f"**{self.game.winner.display_name}** wins with a Blackjack! They take the entire pot of **{pot}** Medals plus a bonus of **{bonus}** Medals for a total of **{total_winnings}** Medals c:<"
-                self.cog.update_pockets(guild_id, self.game.winner, total_winnings)
-            else:
-                message = f"**{self.game.winner.display_name}** wins and takes the entire pot of **{pot}** Medals! c:<"
-                self.cog.update_pockets(guild_id, self.game.winner, pot)
-        
-        # Create the final result embed
-        result_embed = discord.Embed(
-            title="Blackjack Game Over",
-            description=message,
-            color=discord.Color.gold()
-        )
-        
-        # Show final hands
-        initiator_cards = " ".join([f"{face}{suit}" for face, suit in self.game.initiator_hand])
-        opponent_cards = " ".join([f"{face}{suit}" for face, suit in self.game.opponent_hand])
-        
-        initiator_value = self.game.calculate_hand_value(self.game.initiator_hand)
-        opponent_value = self.game.calculate_hand_value(self.game.opponent_hand)
-        
-        result_embed.add_field(
-            name=f"{initiator.display_name}'s Hand ({initiator_value})",
-            value=initiator_cards,
-            inline=False
-        )
-        
-        result_embed.add_field(
-            name=f"{opponent.display_name}'s Hand ({opponent_value})",
-            value=opponent_cards,
-            inline=False
-        )
-
-        # Clean up all resources
-        await self.cleanup_game(interaction.message)
-        
-        # Send a fresh result message
         try:
-            await self.channel.send(
-                content=f"🂠 **BLACKJACK GAME RESULTS** 🂠\n{initiator.mention} vs {opponent.mention}",
-                embed=result_embed
+            guild_id = interaction.guild.id
+            initiator = self.game.initiator
+            opponent = self.game.opponent
+            bet = self.game.bet
+            pot = self.game.pot
+            
+            # Mark the game as finished properly
+            self.finished = True
+            
+            # Determine payouts
+            if self.game.winner is None:
+                # It's a tie, return the bet to both players
+                message = f"The game ended in a tie. Both players get their **{bet}** Medals back."
+                self.cog.update_pockets(guild_id, initiator, bet)
+                self.cog.update_pockets(guild_id, opponent, bet)
+            else:
+                # Winner takes all
+                if self.game.blackjack_bonus:
+                    bonus = int(bet * 0.5)  # 50% bonus for blackjack
+                    total_winnings = pot + bonus
+                    message = f"**{self.game.winner.display_name}** wins with a Blackjack! They take the entire pot of **{pot}** Medals plus a bonus of **{bonus}** Medals for a total of **{total_winnings}** Medals c:<"
+                    self.cog.update_pockets(guild_id, self.game.winner, total_winnings)
+                else:
+                    message = f"**{self.game.winner.display_name}** wins and takes the entire pot of **{pot}** Medals! c:<"
+                    self.cog.update_pockets(guild_id, self.game.winner, pot)
+            
+            # Create the final result embed
+            result_embed = discord.Embed(
+                title="Blackjack Game Over",
+                description=message,
+                color=discord.Color.gold()
             )
+            
+            # Show final hands
+            initiator_cards = " ".join([f"{face}{suit}" for face, suit in self.game.initiator_hand])
+            opponent_cards = " ".join([f"{face}{suit}" for face, suit in self.game.opponent_hand])
+            
+            initiator_value = self.game.calculate_hand_value(self.game.initiator_hand)
+            opponent_value = self.game.calculate_hand_value(self.game.opponent_hand)
+            
+            result_embed.add_field(
+                name=f"{initiator.display_name}'s Hand ({initiator_value})",
+                value=initiator_cards,
+                inline=False
+            )
+            
+            result_embed.add_field(
+                name=f"{opponent.display_name}'s Hand ({opponent_value})",
+                value=opponent_cards,
+                inline=False
+            )
+
+            # Clean up all resources
+            await self.cleanup_game(interaction.message)
+            
+            # Send a fresh result message
+            try:
+                await self.channel.send(
+                    content=f"🂠 **BLACKJACK GAME RESULTS** 🂠\n{initiator.mention} vs {opponent.mention}",
+                    embed=result_embed
+                )
+            except Exception as e:
+                debug.log(f"Error sending final result message: {e}")
+                # Use centralized error handler for this error
+                from athena.error_handler import ErrorHandler
+                ErrorHandler.handle_event_error("blackjack_game_results", e, 
+                                            {"game_id": f"{initiator.id}-{opponent.id}"})
+            
+            self.stop()
         except Exception as e:
-            debug.log(f"Error sending final result message: {e}")
-        
-        self.stop()
+            # Use centralized error handler for any error in this method
+            from athena.error_handler import ErrorHandler
+            debug.log(f"Error in handle_game_over: {e}")
+            ErrorHandler.handle_event_error("blackjack_game_over", e, 
+                                        {"game_id": f"{self.game.initiator.id}-{self.game.opponent.id}"})
     
     async def handle_timeout(self):
         """Handle case where one player times out during active turn."""

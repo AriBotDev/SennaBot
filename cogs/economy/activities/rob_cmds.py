@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
+from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
 from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
 
@@ -85,6 +86,7 @@ class RobCog(EconomyCog):
     
     @app_commands.command(name="rob", description="Attempt to rob another member.")
     @app_commands.describe(target="The player you want to rob")
+    @command_error_handler
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
         """Rob another member to steal their Medals."""
         # Check if trying to rob self

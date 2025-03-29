@@ -164,3 +164,8 @@ class EconomyCog(BotCog):
         # If not on cooldown, set a new cooldown and return True
         self.set_cooldown(interaction.guild.id, interaction.user, command_name)
         return True
+    
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+        """Handle errors from slash commands in economy cogs."""
+        from athena.error_handler import ErrorHandler
+        await ErrorHandler.handle_cog_error(self, interaction, error)

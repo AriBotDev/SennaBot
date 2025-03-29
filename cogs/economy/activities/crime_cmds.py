@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
+from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
 from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
 
@@ -67,6 +68,7 @@ class CrimeCog(EconomyCog):
             return pockets_before, savings_penalty, None
     
     @app_commands.command(name="crime", description="Commit a crime for Medals (risk involved).")
+    @command_error_handler
     async def crime(self, interaction: discord.Interaction):
         """Commit a crime to earn Medals with risk."""
         # Check prison status

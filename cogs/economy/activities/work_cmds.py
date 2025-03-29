@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
+from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
 from ..status.injury_system import get_earning_multiplier
 
@@ -33,6 +34,7 @@ class WorkCog(EconomyCog):
         return [self.work]
     
     @app_commands.command(name="work", description="Work to earn Medals.")
+    @command_error_handler
     async def work(self, interaction: discord.Interaction):
         """Work to earn Medals."""
         # Check prison status

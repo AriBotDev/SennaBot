@@ -56,6 +56,10 @@ async def on_ready():
         debug.log(f"Bot is ready as {bot.user}!")
         print(f"✅ Logged in as {bot.user}!")
         
+        # Set bot instance in error handler for event error reporting
+        ErrorHandler.set_bot_instance(bot)
+        ErrorHandler.set_owner_id(config.OWNER_ID)
+        
         # Create guild permission entries for all guilds
         for guild in bot.guilds:
             PermissionManager.ensure_guild_entry(
@@ -85,6 +89,7 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Error during bot initialization: {e}")
         debug.log(f"Error during bot initialization: {e}")
+        ErrorHandler.handle_event_error("on_ready", e)
 
 async def process_prison_releases():
     """Process any prisoners who should be released."""
