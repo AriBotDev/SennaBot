@@ -1,510 +1,589 @@
 # SennaBot Debug Guide
 
-This document identifies potential issues in SennaBot's codebase and provides guidance on how to fix them. Use this as a reference when improving the bot's stability and performance.
+This document identifies current issues in SennaBot's codebase and provides detailed solutions. Use this as a reference when improving the bot's stability and performance.
 
-## Core Bot Architecture
+## Current Critical Issues
 
-### Error Handling in Event Handlers
+### 1. Circular Import Problems
 
-**Issue:** In `bot.py`, event handlers like `on_message`, `on_guild_join`, and `on_ready` have minimal error handling.
+**Issue:** Despite function-level imports, some modules still have circular dependencies that could cause runtime errors.
 
 **Files Affected:**
-- `bot.py` - Lines 87-125 (event handlers)
+- `economy_base.py`
+- `prison_system.py`
+- `injury_system.py`
+- `balance_challenge.py`
 
 **Fix:**
+Restructure imports to break circular dependencies. For example, in `economy_base.py`:
+
 ```python
-@bot.event
-async def on_guild_join(guild):
-    """Called when the bot joins a new guild."""
+async def check_balance_challenge(self, ctx):
+    """Check if user is in a balance challenge."""
+    user_id = ctx.user.id
+    
+    # Import function directly rather than the entire module
     try:
-        logger.info(f"Bot added to guild: {guild.name} (ID: {guild.id})")
-        debug.log(f"Bot added to guild: {guild.name} (ID: {guild.id})")
+        # Use a simple function that only needs the user ID
+        from .games.balance_challenge import is_in_challenge
         
-        # Create permission entry for this guild
-        PermissionManager.ensure_guild_entry(
-            PermissionManager.load_permissions(),
-            str(guild.id),
-            guild.name
-        )
-        PermissionManager.save_permissions()
-        
-        # Sync commands for this guild
-        guild_permissions = PermissionManager.get_guild_permissions(guild.id)
-        await CommandRegistry.sync_guild_commands(bot, guild.id, guild_permissions)
-    except Exception as e:
-        logger.error(f"Error in on_guild_join event: {e}")
-        ErrorHandler.handle_event_error("on_guild_join", e, {"guild_id": guild.id, "guild_name": guild.name})
+        # Check if user is in an active challenge
+        if is_in_challenge(user_id):
+            await self.send_embed(
+                ctx, 
+                "Balance Challenge", 
+                "You are currently in a balance challenge and cannot use this command.", 
+                discord.Color.red(), 
+                ephemeral=True
+            )
+            return False
+    except ImportError:
+        # If balance_challenge module isn't loaded yet, allow the command
+        self.debug.log("Balance challenge module not loaded yet, allowing command")
+    return True
 ```
 
-Apply similar try-except blocks to all event handlers.
-
-### Command Extraction Inconsistency
-
-**Issue:** In `cmd_registry.py`, the `_extract_guild_commands` method uses multiple approaches to extract commands, which could become inconsistent.
-
-**Files Affected:**
-- `cmd_registry.py` - Lines 120-160 (command extraction)
-
-**Fix:**
-Standardize on a single, reliable method:
+Also, consider creating a central module for common constants to reduce cross-module dependencies:
 
 ```python
-@classmethod
-def _extract_guild_commands(cls, bot: commands.Bot, cog_instance: commands.Cog) -> List[app_commands.Command]:
-    """Extract app commands from a cog instance using standard attributes."""
-    commands_list = []
-    cog_name = cog_instance.__class__.__name__
-    
-    # Primary method: Use get_app_commands if available
-    if hasattr(cog_instance, 'get_app_commands') and callable(getattr(cog_instance, 'get_app_commands')):
-        try:
-            commands_list = cog_instance.get_app_commands() or []
-            debug.log(f"Extracted {len(commands_list)} commands via get_app_commands from {cog_name}")
-            return commands_list
-        except Exception as e:
-            debug.log(f"Error extracting commands via get_app_commands from {cog_name}: {e}")
-    
-    # Fallback: Check for app_command attributes only if primary method failed
-    try:
-        for name, method in inspect.getmembers(cog_instance, predicate=inspect.ismethod):
-            if hasattr(method, 'app_command') and method.app_command not in commands_list:
-                commands_list.append(method.app_command)
-    except Exception as e:
-        debug.log(f"Error extracting commands from methods in {cog_name}: {e}")
-    
-    debug.log(f"Total of {len(commands_list)} commands extracted from cog {cog_name}")
-    return commands_list
-```
+# economy_constants.py
+"""
+Constants shared across economy modules.
+"""
 
-### Command Syncing Cleanup
+# Prison constants
+PRISON_COOLDOWN = 3600  # 1 hour
+ESCAPE_COOLDOWN = 120   # 2 minutes
+BREAKOUT_COOLDOWN = 300 # 5 minutes
 
-**Issue:** When syncing commands, old commands might not be properly removed if they're no longer registered.
-
-**Files Affected:**
-- `cmd_registry.py` - Lines 170-215 (sync_guild_commands)
-
-**Fix:**
-Add code to track and clean up old commands:
-
-```python
-@classmethod
-async def sync_guild_commands(cls, bot: commands.Bot, guild_id: int, permissions: Dict[str, bool]) -> bool:
-    """Sync commands for a specific guild based on permissions."""
-    guild_id_str = str(guild_id)
-    guild_obj = discord.Object(id=guild_id)
-    debug.log(f"Syncing commands for guild {guild_id}")
-    
-    try:
-        # Get previously registered commands for this guild
-        old_commands = {}
-        if guild_id_str in cls._registered_commands:
-            for category, cmd_list in cls._registered_commands[guild_id_str].items():
-                for cmd_name in cmd_list:
-                    old_commands[cmd_name] = category
-        
-        # Clear existing guild commands
-        bot.tree.clear_commands(guild=guild_obj)
-        debug.log(f"Cleared commands for guild {guild_id}")
-        
-        # Initialize tracking for this guild
-        if guild_id_str not in cls._registered_commands:
-            cls._registered_commands[guild_id_str] = {}
-        else:
-            # Clear the old registered commands for this guild
-            cls._registered_commands[guild_id_str] = {}
-        
-        # Register commands based on permissions
-        for category, enabled in permissions.items():
-            if enabled:
-                if category not in cls._registered_commands[guild_id_str]:
-                    cls._registered_commands[guild_id_str][category] = []
-                
-                # Get all cogs of this category
-                category_cogs = [
-                    cog for cog in bot.cogs.values()
-                    if any(isinstance(cog, cog_class) for cog_class in cls.get_category_cogs(category))
-                ]
-                
-                # Extract and register commands from cogs
-                for cog in category_cogs:
-                    cog_commands = cls._extract_guild_commands(bot, cog)
-                    for command in cog_commands:
-                        bot.tree.add_command(command, guild=guild_obj)
-                        cls._registered_commands[guild_id_str].setdefault(category, []).append(command.name)
-                        if command.name in old_commands:
-                            del old_commands[command.name]  # Remove from old commands as it's still valid
-                        debug.log(f"Added command {command.name} to guild {guild_id}")
-        
-        # Log any commands that were removed
-        if old_commands:
-            debug.log(f"Removed old commands from guild {guild_id}: {', '.join(old_commands.keys())}")
-        
-        # Sync the command tree for this guild
-        await bot.tree.sync(guild=guild_obj)
-        debug.log(f"Synced command tree for guild {guild_id}")
-        
-        # Log summary of registered commands
-        for category, commands_list in cls._registered_commands[guild_id_str].items():
-            debug.log(f"Guild {guild_id} has {len(commands_list)} {category} commands")
-        
-        return True
-    
-    except Exception as e:
-        debug.log(f"Error syncing commands for guild {guild_id}: {e}")
-        return False
-```
-
-## Economy System
-
-### Negative Balance Handling
-
-**Issue:** Some economy operations don't properly handle negative balances.
-
-**Files Affected:**
-- `account_cmds.py` - Lines 150-180 (withdraw function)
-- `account_cmds.py` - Lines 190-230 (donate function)
-- `economy_base.py` - Lines 90-140 (update_pockets, update_savings)
-
-**Fix:**
-Add more robust balance checking in `economy_base.py`:
-
-```python
-def update_pockets(self, guild_id, user, amount):
-    """Update a user's pocket balance with validation."""
-    user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
-    current_balance = user_data.get("pockets", 0)
-    
-    # For withdrawals, ensure sufficient funds
-    if amount < 0 and abs(amount) > current_balance and not self.allow_negative_pockets:
-        self.debug.log(f"Attempted to withdraw {abs(amount)} from pockets with balance {current_balance}")
-        return current_balance  # Return unchanged balance
-        
-    user_data["pockets"] = current_balance + amount
-    guild_data = DataService.load_guild_data(guild_id)
-    guild_data[str(user.id)] = user_data
-    DataService.save_guild_data(guild_id, guild_data)
-    return user_data["pockets"]
-```
-
-Also, update `withdraw` and `donate` commands to check balances before operations.
-
-### Race Conditions in Transactions
-
-**Issue:** Multiple concurrent transactions could lead to race conditions where balance changes are lost.
-
-**Files Affected:**
-- `data_service.py` - Lines 195-230 (save_guild_data, load_guild_data)
-- `economy_base.py` - Lines 90-140 (update_pockets, update_savings)
-
-**Fix:**
-Implement a simple lock mechanism in DataService:
-
-```python
-# In data_service.py
-import threading
-
-class DataService:
-    # Add locks dictionary
-    _guild_locks = {}
-    
-    @classmethod
-    def get_guild_lock(cls, guild_id):
-        """Get or create a lock for a specific guild."""
-        guild_id = str(guild_id)
-        if guild_id not in cls._guild_locks:
-            cls._guild_locks[guild_id] = threading.Lock()
-        return cls._guild_locks[guild_id]
-    
-    @classmethod
-    def load_guild_data(cls, guild_id):
-        """Load data for a specific guild with locking."""
-        guild_id = str(guild_id)
-        debug.log(f"Loading guild data for {guild_id}")
-        
-        # Acquire lock for this guild
-        with cls.get_guild_lock(guild_id):
-            # Return cached data if available
-            if guild_id in cls._guild_cache:
-                debug.log(f"Using cached data for guild {guild_id}")
-                return cls._guild_cache[guild_id]
-            
-            # Load from file
-            file_path = os.path.join(cls.GUILDS_DIR, f"{guild_id}.json")
-            data = cls._safe_load_json(file_path, {})
-            
-            # Cache and return data
-            cls._guild_cache[guild_id] = data
-            return data
-    
-    @classmethod
-    def save_guild_data(cls, guild_id, data):
-        """Save data for a specific guild with locking."""
-        guild_id = str(guild_id)
-        debug.log(f"Saving guild data for {guild_id}")
-        
-        # Acquire lock for this guild
-        with cls.get_guild_lock(guild_id):
-            # Update cache
-            cls._guild_cache[guild_id] = data
-            
-            # Save to file
-            file_path = os.path.join(cls.GUILDS_DIR, f"{guild_id}.json")
-            return cls._safe_save_json(file_path, data)
-```
-
-Then modify transaction methods to use this locking mechanism.
-
-### Success/Failure Calculations Using Separate Constants
-
-**Issue:** Success/failure rate calculations use constants scattered across files.
-
-**Files Affected:**
-- `crime_cmds.py` - Lines 25-35 (CRIME_FAIL_RATE, CRIME_DEATH_CHANCE, etc.)
-- `rob_cmds.py` - Lines 20-30 (ROB_FAIL_RATE, ROB_DEATH_CHANCE, etc.)
-- `injury_system.py` - Lines 20-60 (FAIL_RATES, get_fail_rate, etc.)
-
-**Fix:**
-Consolidate constants in a central location (injury_system.py) and reference them:
-
-```python
-# In injury_system.py
-# Base failure rates for activities
+# Failure rates
 FAIL_RATES = {
     "crime": 51,
     "rob": 55
 }
 
-# Outcome probabilities
+# Outcome chances
 OUTCOME_CHANCES = {
     "death": 15,    # 15% chance for death on failure
     "injury": 65,   # 65% chance for injury on failure
-    "prison": 20    # 20% chance for prison on failure (remainder)
+    "prison": 20    # 20% chance for prison on failure
 }
 
 # Death penalty
 DEATH_SAVINGS_PENALTY = 0.10  # 10% of savings
-
-# Then update all activities to use these consolidated constants
-def get_outcome_chance(outcome_type, guild_id=None, user=None):
-    """Get modified chance for a specific outcome type."""
-    base_chance = OUTCOME_CHANCES.get(outcome_type, 0)
-    
-    # Apply modifiers if user is provided
-    if guild_id and user:
-        user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
-        injuries = user_data.get("injuries", 0)
-        
-        # Get injury tier and modifiers
-        tier = get_injury_tier(injuries)
-        if outcome_type == "death":
-            return base_chance + tier["effects"]["death_chance_mod"]
-        elif outcome_type == "prison":
-            return base_chance + tier["effects"]["prison_chance_mod"]
-    
-    return base_chance
 ```
 
-### Duplicated Cooldown Logic
+### 2. Race Conditions in Data Handling
 
-**Issue:** Cooldown checking and setting code is duplicated across activity commands.
+**Issue:** Some operations in UI components directly modify data without proper synchronization, which can lead to data corruption when multiple operations happen simultaneously.
 
 **Files Affected:**
-- `economy_base.py` - Lines 145-180 (cooldown methods)
-- `work_cmds.py`, `crime_cmds.py`, `rob_cmds.py` - Cooldown sections in commands
+- `breakout_components.py`
+- `jaeger_components.py`
+- `balance_challenge.py`
 
 **Fix:**
-Create a unified cooldown handler method in EconomyCog:
+Implement proper synchronization for all data operations. For example, in `balance_challenge.py`:
 
 ```python
-# In economy_base.py
-async def handle_cooldown(self, interaction, command_name, cooldown_time, ephemeral=True):
-    """
-    Unified cooldown handler that checks and sets cooldowns.
-    Returns True if command can proceed, False if on cooldown.
-    """
-    # Check cooldown
-    can_use, remaining = self.check_cooldown(
-        interaction.guild.id, 
-        interaction.user, 
-        command_name, 
-        cooldown_time
-    )
-    
-    if not can_use:
-        minutes, seconds = divmod(remaining, 60)
-        cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-        await self.send_embed(
-            interaction, 
-            "Cooldown",
-            f"You cannot use this command for another **{cooldown_text}**.",
-            discord.Color.orange(), 
-            ephemeral=ephemeral
-        )
-        return False
-    
-    # If not on cooldown, set a new cooldown and return True
-    self.set_cooldown(interaction.guild.id, interaction.user, command_name)
-    return True
+# Create a thread-safe lock mechanism
+_donation_lock = threading.Lock()
+
+# Replace this code in BalanceChallengeCog.on_app_command_completion
+async def on_app_command_completion(self, interaction, command):
+    try:
+        # Special handling for donate command 
+        if interaction.command and interaction.command.name == "donate":
+            # Extract the target from options
+            target = None
+            
+            try:
+                options = interaction.data.get("options", [])
+                for option in options:
+                    if option.get("name") == "target":
+                        target_id = option.get("value")
+                        self.debug.log(f"Found target ID: {target_id}")
+                        
+                        # Try to resolve the target using fetch_user first
+                        target = await self.bot.fetch_user(int(target_id))
+                        if not target:
+                            self.debug.log(f"Failed to fetch user with ID {target_id}")
+                            continue
+                            
+                        # Try to resolve as member if possible
+                        try:
+                            member = await interaction.guild.fetch_member(int(target_id))
+                            if member:
+                                target = member
+                        except:
+                            # Continue with the user object if we can't get the member
+                            pass
+                            
+                        self.debug.log(f"Resolved target: {target.display_name if target else 'None'}")
+                        break
+            except Exception as e:
+                self.debug.log(f"Error extracting or resolving target from donate command: {e}")
+            
+            if target and target.id != interaction.user.id:
+                # Use thread-safe locking instead of a simple dictionary
+                target_id = target.id
+                acquire_lock = False
+                
+                # Try to acquire lock for this target
+                with _donation_lock:
+                    if target_id in self.donation_check_locks:
+                        self.debug.log(f"Target {target_id} already being checked, skipping")
+                    else:
+                        # Set lock for this target
+                        self.donation_check_locks[target_id] = True
+                        acquire_lock = True
+                
+                if acquire_lock:
+                    try:
+                        # Wait longer for the donation to complete and balances to update
+                        self.debug.log(f"Waiting for donation to complete...")
+                        await asyncio.sleep(3.0)
+                        
+                        # Check if the target now meets the challenge threshold
+                        result = await balance_challenge_manager.trigger_challenge_for_donation_target(
+                            self.bot, interaction.guild, target
+                        )
+                        self.debug.log(f"Challenge trigger result for {target.display_name}: {result}")
+                    finally:
+                        # Clear the lock regardless of the outcome
+                        with _donation_lock:
+                            if target_id in self.donation_check_locks:
+                                del self.donation_check_locks[target_id]
+            else:
+                self.debug.log(f"Target not found or is self")
 ```
 
-Then use this in activity commands:
+### 3. Inconsistent Prison and Escape Handling
 
-```python
-@app_commands.command(name="work", description="Work to earn Medals.")
-async def work(self, interaction: discord.Interaction):
-    """Work to earn Medals."""
-    # Check prison status
-    if not await self.check_prison_status(interaction):
-        return
-        
-    # Check balance challenge
-    if not await self.check_balance_challenge(interaction):
-        return
-        
-    # Handle cooldown with unified method
-    if not await self.handle_cooldown(interaction, "work", DEFAULT_WORK_COOLDOWN):
-        return
-    
-    # Rest of command logic...
-```
-
-## UI Components
-
-### Timeout Resource Cleanup
-
-**Issue:** UI component timeouts might not consistently clean up resources.
+**Issue:** Escape chance modifiers are calculated differently in `prison_system.py` and `escape_cmds.py`, leading to unpredictable escape success rates.
 
 **Files Affected:**
-- `breakout_components.py`, `jaeger_components.py` - on_timeout methods
-- `blackjack_game.py` - Lines 780-820 (on_timeout method)
+- `prison_system.py`
+- `escape_cmds.py`
+- `injury_system.py`
 
 **Fix:**
-Implement a consistent pattern for timeouts:
+Standardize the escape chance calculation by moving it to a single location:
+
+```python
+# In injury_system.py (as a central location)
+def get_escape_chance_modifier(guild_id: int, user_id: int) -> int:
+    """
+    Get escape chance modifier based on user's injury status.
+    Returns a negative value (penalty) to be added to the base escape chance.
+    """
+    # Load user data
+    guild_data = DataService.load_guild_data(guild_id)
+    user_key = str(user_id)
+    
+    if user_key not in guild_data:
+        return 0
+    
+    user_data = guild_data[user_key]
+    injuries = user_data.get("injuries", 0)
+    injury_status = user_data.get("injured", False)
+    
+    if not injury_status or injuries <= 0:
+        return 0
+    
+    # Apply standard penalties based on injury level
+    if injuries >= 4:  # Critical Condition
+        return -25
+    elif injuries >= 3:  # Needs Surgery
+        return -15
+    elif injuries >= 2:  # Moderate Injury
+        return -5
+    elif injuries >= 1:  # Light Injury
+        return -3
+    
+    return 0
+```
+
+Then update `escape_cmds.py` to use this function:
+
+```python
+# In escape_cmds.py
+from ..status.injury_system import get_escape_chance_modifier
+
+# Later in the escape command method
+# Get base escape chance from tier
+base_escape_chance = tier[2]
+
+# Modify escape chance based on injury tier using the centralized function
+escape_chance_mod = get_escape_chance_modifier(interaction.guild.id, interaction.user.id)
+escape_chance = base_escape_chance + escape_chance_mod
+
+# Ensure escape chance doesn't go below 5%
+escape_chance = max(5, escape_chance)
+```
+
+### 4. UI Component Resource Cleanup
+
+**Issue:** Several UI components have incomplete `on_timeout()` handlers that don't properly clean up resources, which can lead to memory leaks and dangling references.
+
+**Files Affected:**
+- `blackjack_game.py`
+- `breakout_components.py`
+- `jaeger_components.py`
+
+**Fix:**
+Implement proper cleanup in all UI components. For example, in `BlackjackGameView`:
+
+```python
+async def on_timeout(self):
+    """Handle timeout of the game view."""
+    try:
+        # Check if the game was already completed
+        if self.finished:
+            # Game already finished, just clean up any remaining messages
+            await self.cleanup_messages()
+            return
+                
+        # If a game is still in progress when the view times out, cancel it
+        await self.cancel_game()
+        
+        # Explicitly clean up references
+        self.game = None
+        self.cog = None
+        self.channel = None
+        self.game_message = None
+        self.turn_messages = []
+        self.turn_notifications = {}
+    except Exception as e:
+        debug.log(f"Error in timeout handler: {e}")
+```
+
+For `JaegerBoxesBreakoutView`, fix the `on_timeout` method:
 
 ```python
 async def on_timeout(self):
     """Handle timeout of the component."""
     try:
-        # 1. Clean up any game state or resources
-        if hasattr(self, 'game_state'):
-            # Clean up game state
-            pass
+        # Get current guild and user data
+        guild_id = self.interaction.guild.id
+        user_id = self.interaction.user.id
+        user = self.interaction.user
+        
+        # Clear pocket money
+        user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
+        
+        with DataService.get_guild_lock(guild_id):
+            pockets_before = self.cog.get_pockets(guild_id, user)
+            self.cog.update_pockets(guild_id, user, -pockets_before)
+                        
+            # Take 25% of savings
+            savings = self.cog.get_savings(guild_id, user)
+            savings_penalty = int(savings * 0.25)
             
-        # 2. Remove from active games if applicable
-        if hasattr(self, 'game_id') and self.game_id in ACTIVE_GAMES:
-            del ACTIVE_GAMES[self.game_id]
+            # Apply penalty
+            if savings <= 0 or savings_penalty <= 0:
+                self.cog.update_savings(guild_id, user, -75)
+                savings_penalty = 75
+            else:
+                self.cog.update_savings(guild_id, user, -savings_penalty)
             
-        # 3. Try to update the original message
-        if self.message:
+            # Reload guild data after updates
+            guild_data = DataService.load_guild_data(guild_id)
+            user_key = str(user_id)
+            
+            # Free from prison and clear injuries
+            if user_key in guild_data:
+                guild_data[user_key]["prison"] = None
+                guild_data[user_key]["injuries"] = 0
+                guild_data[user_key]["injured"] = False
+                DataService.save_guild_data(guild_id, guild_data)
+        
+        embed = discord.Embed(
+            title="Impatient Wolves",
+            description=f"The Jaeger's grew impatient of your silly games.\n\n**They have lobbed your head off.**\n\nTaking your **All** Medals from your pockets and **{savings_penalty}** Medals from savings...",
+            color=discord.Color.dark_red()
+        )
+        
+        # Safely edit message with try-except
+        try:
+            await self.interaction.edit_original_response(
+                content=f"<@{user_id}>",
+                embed=embed,
+                view=None
+            )
+        except Exception as e:
+            debug.log(f"Error editing message in timeout handler: {e}")
+            # Try followup message as fallback
             try:
-                await self.message.edit(
-                    content="This interaction has expired.",
-                    view=None  # Remove the view
+                await self.interaction.followup.send(
+                    content=f"<@{user_id}>",
+                    embed=embed
                 )
-            except discord.NotFound:
-                # Message may have been deleted
+            except:
                 pass
-            except discord.HTTPException as e:
-                debug.log(f"Error updating message on timeout: {e}")
-                
+                    
     except Exception as e:
         debug.log(f"Error in timeout handler: {e}")
+        
+    finally:
+        # Clean up references
+        self.cog = None
+        self.interaction = None
+        self.user = None
+        self.message = None
 ```
 
-Apply this pattern across all UI components.
+### 5. Negative Balance Handling Inconsistency
 
-### Healing Costs Without Sufficient Funds
-
-**Issue:** The mortician healing command doesn't handle cases where players have insufficient funds.
+**Issue:** In `economy_base.py`, `allow_negative_pockets` and `allow_negative_savings` are always set to True, but commands like deposit/withdraw in `account_cmds.py` assume balances can't be negative.
 
 **Files Affected:**
-- `mortician_cmds.py` - Lines 45-90 (see_mortician command)
+- `economy_base.py`
+- `account_cmds.py`
 
 **Fix:**
-Improve the fund check:
+Make negative balance handling consistent by updating `economy_base.py`:
 
 ```python
-@app_commands.command(name="see_mortician", description="Visit the Mortician's Wing to heal your injuries.")
-async def see_mortician(self, interaction: discord.Interaction):
-    """Visit the mortician to heal injuries."""
-    # Check if user is in prison
-    # [existing code]
-            
-    # Get injury status
-    from .injury_system import get_injury_status
-    injury_status = get_injury_status(interaction.guild.id, interaction.user)
-    injuries = injury_status["injuries"]
-    
-    if injuries <= 0:
-        return await self.send_embed(
-            interaction, 
-            "Mortician's Wing",
-            "You are not injured. Did you just come here to steal my stims???",
-            discord.Color.orange(), 
-            ephemeral=True
-        )
-            
-    heal_cost = injury_status["heal_cost"]
-    
-    # Check if user has enough funds
-    pockets = DataService.get_pockets(interaction.guild.id, interaction.user)
-    savings = DataService.get_savings(interaction.guild.id, interaction.user)
-    total_funds = pockets + savings
-    
-    if total_funds < heal_cost:
-        return await self.send_embed(
-            interaction, 
-            "Mortician's Wing",
-            f"You need **{heal_cost}** Medals to heal your {injury_status['tier']}. You only have **{total_funds}** Medals total.",
-            discord.Color.red(), 
-            ephemeral=True
-        )
-    
-    # Handle negative pocket balance
-    if pockets < 0:
-        return await self.send_embed(
-            interaction, 
-            "Error",
-            "You have a negative pocket balance. Resolve your debt before healing.",
-            discord.Color.red(), 
-            ephemeral=True
-        )
-    
-    # Take money, favoring pockets first
-    # [existing code]
+def update_pockets(self, guild_id, user, amount):
+    """Update a user's pocket balance with thread safety."""
+    with DataService.get_guild_lock(guild_id):
+        user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
+        current_balance = user_data.get("pockets", 0)
+        
+        # For withdrawals, always allow negative balances (allows debt)
+        # This is consistent with how account_cmds.py handles it
+        user_data["pockets"] = current_balance + amount
+        guild_data = DataService.load_guild_data(guild_id)
+        guild_data[str(user.id)] = user_data
+        DataService.save_guild_data(guild_id, guild_data)
+        return user_data["pockets"]
+
+def update_savings(self, guild_id, user, amount):
+    """Update a user's savings balance with thread safety."""
+    with DataService.get_guild_lock(guild_id):
+        user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
+        current_balance = user_data.get("savings", 0)
+        
+        # For withdrawals, always allow negative balances (allows debt)
+        # This is consistent with how account_cmds.py handles it
+        user_data["savings"] = current_balance + amount
+        guild_data = DataService.load_guild_data(guild_id)
+        guild_data[str(user.id)] = user_data
+        DataService.save_guild_data(guild_id, guild_data)
+        return user_data["savings"]
 ```
 
-### Blackjack Game State Management
-
-**Issue:** Blackjack game has complex state that might not be properly handled.
-
-**Files Affected:**
-- `blackjack_game.py` - The entire game implementation
-
-**Fix:**
-Add a proper cleanup method and ensure all game paths terminate correctly:
+Also, make sure all commands check for negative balances properly:
 
 ```python
-# In BlackjackGameView class
-def register_game(self):
-    """Register this game in active games tracking."""
-    player_key = f"{self.game.initiator.id}-{self.channel.guild.id}"
-    opponent_key = f"{self.game.opponent.id}-{self.channel.guild.id}"
-    ACTIVE_GAMES[player_key] = self.game
-    ACTIVE_GAMES[opponent_key] = self.game
+# In deposit command in account_cmds.py
+# Check for negative pocket balance
+pockets = self.get_pockets(interaction.guild.id, interaction.user)
+if pockets < 0:
+    return await self.send_embed(
+        interaction, 
+        "Error",
+        "You have a negative pocket balance. You cannot deposit until you resolve your debt.",
+        discord.Color.red(), 
+        ephemeral=True
+    )
+```
 
-def unregister_game(self):
-    """Remove this game from active games tracking."""
+### 6. Error Handling Gaps
+
+**Issue:** The `command_error_handler` decorator isn't used consistently across all commands, and some UI component callbacks don't have proper error handling.
+
+**Files Affected:**
+- Various command implementations
+- UI component classes
+
+**Fix:**
+Apply the error handler decorator consistently to all commands:
+
+```python
+# In any command implementation
+@app_commands.command(name="command_name", description="Command description.")
+@command_error_handler
+async def command_name(self, interaction: discord.Interaction):
+    """Command implementation."""
+    # ...
+```
+
+Add proper error handling to UI component callbacks:
+
+```python
+# Example for a button callback
+@discord.ui.button(label="Button", style=discord.ButtonStyle.primary)
+async def button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
     try:
-        player_key = f"{self.game.initiator.id}-{self.channel.guild.id}"
-        opponent_key = f"{self.game.opponent.id}-{self.channel.guild.id}"
-        if player_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[player_key]
-        if opponent_key in ACTIVE_GAMES:
-            del ACTIVE_GAMES[opponent_key]
+        # Check if correct user
+        if interaction.user.id != self.expected_user_id:
+            await interaction.response.send_message("Not your interaction.", ephemeral=True)
+            return
+            
+        # Button logic
+        # ...
+        
+        # Update message
+        await interaction.response.edit_message(content="Updated content", view=self)
     except Exception as e:
-        debug.log(f"Error unregistering game: {e}")
+        debug.log(f"Error in button callback: {e}")
+        try:
+            # Send error message to user
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "An error occurred while processing this interaction.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "An error occurred while processing this interaction.",
+                    ephemeral=True
+                )
+        except:
+            pass
+```
 
+### 7. Initialization Order Dependencies
+
+**Issue:** The initialization sequence in `bot.py` might access components before they're properly initialized.
+
+**Files Affected:**
+- `bot.py`
+- `framework_core.py`
+
+**Fix:**
+Implement a proper dependency management system in `framework_core.py`:
+
+```python
+@classmethod
+def initialize(cls):
+    """Initialize the Athena framework."""
+    if cls.initialized:
+        print("Athena framework already initialized")
+        return
+    
+    print(f"Initializing Athena framework v{cls.VERSION}")
+    
+    # Ensure data directories exist
+    cls._ensure_directories()
+    
+    # Define initialization order
+    init_sequence = [
+        ('debug_tools', lambda: DebugTools.get_debugger("framework")),
+        ('logging_service', lambda: cls._init_logging()),
+        ('data_service', lambda: DataService.initialize()),
+        ('perm_manager', lambda: None),  # No explicit initialization needed
+        ('cmd_registry', lambda: None),  # No explicit initialization needed
+        ('response_manager', lambda: ResponseManager.initialize()),
+        ('error_handler', lambda: None)  # No explicit initialization needed
+    ]
+    
+    # Execute initialization sequence
+    for component_name, init_func in init_sequence:
+        try:
+            result = init_func()
+            if component_name == 'debug_tools':
+                cls.debug = result
+                cls.debug.log(f"Initializing Athena framework v{cls.VERSION}")
+            elif component_name == 'logging_service':
+                cls.logging_service = result
+            # Store other components as they're initialized
+        except Exception as e:
+            print(f"Error initializing component {component_name}: {e}")
+            # Continue initialization of other components
+    
+    # Import and store references to all components
+    from .data_service import DataService
+    from .perm_manager import PermissionManager
+    from .cmd_registry import CommandRegistry
+    from .response_manager import ResponseManager
+    from .error_handler import ErrorHandler
+    
+    # Store references
+    cls.data_service = DataService
+    cls.perm_manager = PermissionManager
+    cls.cmd_registry = CommandRegistry
+    cls.response_manager = ResponseManager
+    cls.error_handler = ErrorHandler
+    
+    cls.initialized = True
+    cls.debug.log("Athena framework initialization complete")
+
+@classmethod
+def _init_logging(cls):
+    """Initialize logging service."""
+    from .logging_service import LoggingService
+    LoggingService.initialize()
+    return LoggingService
+```
+
+And modify `bot.py` to wait for full initialization:
+
+```python
+# In bot.py, on_ready event
+@bot.event
+async def on_ready():
+    """Called when the bot is ready and connected to Discord."""
+    try:
+        logger.info(f"✅ Logged in as {bot.user}!")
+        debug.log(f"Bot is ready as {bot.user}!")
+        print(f"✅ Logged in as {bot.user}!")
+        
+        # Make sure framework is fully initialized
+        if not Athena.initialized:
+            debug.log("Athena framework not fully initialized, waiting...")
+            # Wait a bit to ensure initialization is complete
+            await asyncio.sleep(1)
+        
+        # Set bot instance in error handler for event error reporting
+        ErrorHandler.set_bot_instance(bot)
+        ErrorHandler.set_owner_id(config.OWNER_ID)
+        
+        # Create guild permission entries for all guilds
+        for guild in bot.guilds:
+            PermissionManager.ensure_guild_entry(
+                PermissionManager.load_permissions(),
+                str(guild.id),
+                guild.name
+            )
+        PermissionManager.save_permissions()
+        
+        # Load all cogs
+        debug.log("Loading cogs...")
+        await bot.load_extension("cogs")
+        
+        # Clear global commands
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+        debug.log("Cleared global commands")
+        
+        # Sync commands for all guilds
+        await CommandRegistry.sync_all_guilds(bot)
+        
+        # Process any prisoners who should be released
+        await process_prison_releases()
+        
+        logger.info("Bot initialization complete")
+        debug.log("Bot initialization complete")
+    except Exception as e:
+        logger.error(f"Error during bot initialization: {e}")
+        debug.log(f"Error during bot initialization: {e}")
+        ErrorHandler.handle_event_error("on_ready", e)
+```
+
+### 8. Game State Management Issues
+
+**Issue:** In `blackjack_game.py`, the `cleanup_game` method doesn't always properly clean up all game references, which can lead to "zombie" games or memory leaks.
+
+**Files Affected:**
+- `blackjack_game.py`
+
+**Fix:**
+Improve the `cleanup_game` method in `BlackjackGameView`:
+
+```python
 async def cleanup_game(self, message=None):
     """Clean up all resources for this game."""
     try:
@@ -518,363 +597,271 @@ async def cleanup_game(self, message=None):
         if self.game_message and not message:
             try:
                 await self.game_message.delete()
-            except:
-                pass
+            except Exception as e:
+                debug.log(f"Error deleting game message: {e}")
+                # Don't throw, continue cleanup
+            
+        # Clear any stored references
+        for player_id in self.turn_notifications:
+            try:
+                # Stop all pending notifications
+                notification = self.turn_notifications[player_id]
+                notification.stop()
+            except Exception as e:
+                debug.log(f"Error stopping notification: {e}")
+                
+        # Clear all member references
+        self.game = None
+        self.cog = None
+        self.channel = None
+        self.game_message = None
+        self.turn_messages = []
+        self.turn_notifications = {}
     except Exception as e:
         debug.log(f"Error in game cleanup: {e}")
 ```
 
-Then call this cleanup method from all game termination paths.
-
-### Game State Cleanup on Interruption
-
-**Issue:** Game state might not be properly cleaned up if interrupted.
-
-**Files Affected:**
-- `balance_challenge.py` - ChallengeGame class
-- `blackjack_game.py` - BlackjackGameView class
-
-**Fix:**
-Register active games with a cleanup handler:
+Also, add periodic cleanup of abandoned games:
 
 ```python
-# In balance_challenge.py
-# Maintain a dict of active challenges
-_active_challenges = {}
-
-def register_challenge(user_id, guild_id, challenge_instance):
-    """Register an active challenge."""
-    key = f"{user_id}-{guild_id}"
-    _active_challenges[key] = challenge_instance
-    debug.log(f"Registered challenge for {user_id} in guild {guild_id}")
-
-def unregister_challenge(user_id, guild_id):
-    """Unregister an active challenge."""
-    key = f"{user_id}-{guild_id}"
-    if key in _active_challenges:
-        del _active_challenges[key]
-        debug.log(f"Unregistered challenge for {user_id} in guild {guild_id}")
-
-def cleanup_abandoned_challenges():
-    """Check for and clean up any abandoned challenges."""
+# Add this function to blackjack_game.py
+async def cleanup_abandoned_games():
+    """Check for and clean up any abandoned games."""
     current_time = time.time()
-    to_remove = []
+    games_to_remove = []
     
-    for key, challenge in _active_challenges.items():
-        if hasattr(challenge, 'last_activity') and (current_time - challenge.last_activity) > 300:  # 5 minutes
-            to_remove.append(key)
+    for game_key, game in ACTIVE_GAMES.items():
+        # Check if game view has a last_activity timestamp
+        if hasattr(game, 'last_activity') and (current_time - game.last_activity) > 300:  # 5 minutes
+            games_to_remove.append(game_key)
             try:
-                # Try to clean up the challenge
-                asyncio.create_task(challenge.handle_timeout())
-            except:
-                pass
+                # Try to cancel the game
+                game_view = getattr(game, 'view', None)
+                if game_view:
+                    asyncio.create_task(game_view.cancel_game())
+            except Exception as e:
+                debug.log(f"Error cleaning up abandoned game {game_key}: {e}")
     
-    for key in to_remove:
-        del _active_challenges[key]
-        debug.log(f"Cleaned up abandoned challenge: {key}")
-```
-
-Then add a periodic task in the bot to run this cleanup.
-
-## Framework Components
-
-### File Locking for Concurrent Writes
-
-**Issue:** The data service lacks proper file locking for concurrent writes.
-
-**Files Affected:**
-- `data_service.py` - Lines 75-120 (_safe_save_json method)
-
-**Fix:**
-Implement file locking for atomic writes:
-
-```python
-import fcntl
-
-@classmethod
-def _safe_save_json(cls, file_path, data):
-    """Safely save data to a JSON file with proper locking."""
-    cls._ensure_directories()
-    debug.start_timer(f"save_json_{os.path.basename(file_path)}")
-    
-    # Create backup of existing file
-    if os.path.exists(file_path):
-        backup_path = f"{file_path}.backup"
+    # Remove games from active games dict
+    for key in games_to_remove:
         try:
-            shutil.copy2(file_path, backup_path)
-            debug.log(f"Created backup at {backup_path}")
-        except Exception as e:
-            debug.log(f"Error creating backup: {e}")
-    
-    # Write to temporary file first
-    temp_path = f"{file_path}.tmp"
+            del ACTIVE_GAMES[key]
+            debug.log(f"Removed abandoned game: {key}")
+        except KeyError:
+            pass
+```
+
+### 9. Balance Challenge Triggers
+
+**Issue:** In `balance_challenge.py`, the `on_app_command_completion` handler has complex logic that might not handle all edge cases.
+
+**Files Affected:**
+- `balance_challenge.py`
+
+**Fix:**
+Simplify and improve the handler logic:
+
+```python
+@commands.Cog.listener()
+async def on_app_command_completion(self, interaction, command):
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            # Add exclusive file lock
-            fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(data, f, indent=4)
-            # Release lock (happens automatically when file closed)
-            fcntl.flock(f, fcntl.LOCK_UN)
+        # Skip processing if not in a guild
+        if not interaction.guild:
+            return
+            
+        # Skip if the user is a bot
+        if interaction.user.bot:
+            return
+            
+        # Common set of commands that might affect balance
+        balance_affecting_commands = {
+            "work", "crime", "rob",    # Income
+            "roulette", "blackjack",   # Gambling
+            "deposit", "withdraw", "donate",  # Banking
+            "balance"                  # Check balance
+        }
         
-        # Rename temp file to actual file (atomic operation)
-        os.replace(temp_path, file_path)
-        debug.log(f"Successfully saved data to {file_path}")
-        return True
+        # Special handling for donate command 
+        if interaction.command and interaction.command.name == "donate":
+            target = await self._extract_donation_target(interaction)
+            
+            if target and target.id != interaction.user.id:
+                await self._process_donation_target(interaction, target)
         
+        # Check for any command that might affect balance
+        if interaction.command and interaction.command.name in balance_affecting_commands:
+            await balance_challenge_manager.trigger_balance_challenge(self.bot, interaction)
+
     except Exception as e:
-        debug.log(f"Error saving to {file_path}: {e}")
-        return False
+        self.debug.log(f"Error in on_app_command_completion: {e}")
         
-    finally:
-        # Clean up temp file if it still exists
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
-        debug.end_timer(f"save_json_{os.path.basename(file_path)}")
+async def _extract_donation_target(self, interaction):
+    """Extract donation target from interaction data."""
+    try:
+        options = interaction.data.get("options", [])
+        for option in options:
+            if option.get("name") == "target":
+                target_id = option.get("value")
+                self.debug.log(f"Found target ID: {target_id}")
+                
+                # Try to resolve the target using fetch_user first
+                target = await self.bot.fetch_user(int(target_id))
+                if not target:
+                    self.debug.log(f"Failed to fetch user with ID {target_id}")
+                    return None
+                    
+                # Try to resolve as member if possible
+                try:
+                    member = await interaction.guild.fetch_member(int(target_id))
+                    if member:
+                        target = member
+                except:
+                    # Continue with the user object if we can't get the member
+                    pass
+                    
+                self.debug.log(f"Resolved target: {target.display_name if target else 'None'}")
+                return target
+    except Exception as e:
+        self.debug.log(f"Error extracting donation target: {e}")
+    
+    return None
+    
+async def _process_donation_target(self, interaction, target):
+    """Process a donation target for balance challenge checking."""
+    # Avoid checking the same target multiple times simultaneously
+    target_id = target.id
+    acquire_lock = False
+    
+    # Use thread-safe locking
+    with threading.Lock():
+        if target_id in self.donation_check_locks:
+            self.debug.log(f"Target {target_id} already being checked, skipping")
+            return
+        
+        # Set lock for this target
+        self.donation_check_locks[target_id] = True
+        acquire_lock = True
+    
+    if acquire_lock:
+        try:
+            # Wait for donation to complete and balances to update
+            self.debug.log(f"Waiting for donation to complete...")
+            await asyncio.sleep(3.0)
+            
+            # Check if the target now meets the challenge threshold
+            result = await balance_challenge_manager.trigger_challenge_for_donation_target(
+                self.bot, interaction.guild, target
+            )
+            self.debug.log(f"Challenge trigger result for {target.display_name}: {result}")
+        finally:
+            # Clear the lock regardless of the outcome
+            with threading.Lock():
+                if target_id in self.donation_check_locks:
+                    del self.donation_check_locks[target_id]
 ```
 
-### Cache Invalidation
+### 10. Command Cooldown Consistency
 
-**Issue:** Cache management could lead to stale data.
-
-**Files Affected:**
-- `data_service.py` - Cache handling throughout
-- `perm_manager.py` - Permission caching
-
-**Fix:**
-Add proper cache invalidation and TTL:
-
-```python
-# In data_service.py
-# Add cache TTL
-_cache_timestamps = {}
-CACHE_TTL = 300  # 5 minutes
-
-@classmethod
-def load_guild_data(cls, guild_id, force_reload=False):
-    """Load data for a specific guild with TTL caching."""
-    guild_id = str(guild_id)
-    debug.log(f"Loading guild data for {guild_id}")
-    
-    current_time = time.time()
-    
-    # Check if cache is valid
-    cache_valid = (
-        guild_id in cls._guild_cache and
-        guild_id in cls._cache_timestamps and
-        current_time - cls._cache_timestamps[guild_id] < CACHE_TTL and
-        not force_reload
-    )
-    
-    if cache_valid:
-        debug.log(f"Using cached data for guild {guild_id}")
-        return cls._guild_cache[guild_id]
-    
-    # Load from file
-    file_path = os.path.join(cls.GUILDS_DIR, f"{guild_id}.json")
-    data = cls._safe_load_json(file_path, {})
-    
-    # Update cache and timestamp
-    cls._guild_cache[guild_id] = data
-    cls._cache_timestamps[guild_id] = current_time
-    
-    return data
-
-@classmethod
-def invalidate_cache(cls, guild_id=None):
-    """Invalidate cache for a specific guild or all guilds."""
-    if guild_id:
-        guild_id = str(guild_id)
-        if guild_id in cls._guild_cache:
-            del cls._guild_cache[guild_id]
-            if guild_id in cls._cache_timestamps:
-                del cls._cache_timestamps[guild_id]
-            debug.log(f"Invalidated cache for guild {guild_id}")
-    else:
-        cls._guild_cache.clear()
-        cls._cache_timestamps.clear()
-        debug.log("Invalidated all data caches")
-```
-
-Apply similar logic to other caching components.
-
-### Permission Check Consistency
-
-**Issue:** Permission checks might not be consistent across all commands.
+**Issue:** Some commands might not properly check cooldowns before execution.
 
 **Files Affected:**
-- Various cog files implementing `cog_app_command_check`
+- `work_cmds.py`, `crime_cmds.py`, `rob_cmds.py`
+- `balance_challenge.py`
+- Other commands with cooldowns
 
 **Fix:**
-Standardize the permission check method in BotCog:
+Implement a centralized cooldown checking method in `EconomyCog` and use it consistently:
 
 ```python
-# In cog_base.py
-async def check_permissions(self, interaction: discord.Interaction, category=None):
+# In economy_base.py
+async def handle_cooldown(self, interaction, command_name, cooldown_time, ephemeral=True):
     """
-    Standard permission check method for all cogs.
-    Returns True if user has permission, False otherwise.
+    Unified cooldown handler that checks and sets cooldowns.
+    Returns True if command can proceed, False if on cooldown.
     """
-    # Check for DMs
-    if not interaction.guild:
-        await interaction.response.send_message(
-            "This command can only be used in a server.",
-            ephemeral=True
+    try:
+        # Check cooldown
+        can_use, remaining = self.check_cooldown(
+            interaction.guild.id, 
+            interaction.user, 
+            command_name, 
+            cooldown_time
         )
-        return False
-    
-    # If category is specified, check guild permission
-    if category:
-        from athena.perm_manager import PermissionManager
-        if not PermissionManager.get_guild_permission(interaction.guild.id, category):
-            await interaction.response.send_message(
-                f"This server is not whitelisted for {category} commands.",
-                ephemeral=True
+        
+        if not can_use:
+            minutes, seconds = divmod(remaining, 60)
+            cooldown_text = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+            await self.send_embed(
+                interaction, 
+                "Cooldown",
+                f"You cannot use this command for another **{cooldown_text}**.",
+                discord.Color.orange(), 
+                ephemeral=ephemeral
             )
             return False
-    
-    return True
-
-# Then in subclasses
-async def cog_app_command_check(self, interaction: discord.Interaction) -> bool:
-    """Check permissions for commands in this cog."""
-    # Check standard permissions
-    if not await self.check_permissions(interaction, "economy"):
-        return False
         
-    # Additional cog-specific checks...
-    return True
-```
-
-### Error Reporting to Owner
-
-**Issue:** Error reporting to owner may fail silently.
-
-**Files Affected:**
-- `error_handler.py` - Lines 150-180 (_send_error_to_owner method)
-
-**Fix:**
-Enhance error reporting with better error handling and logging:
-
-```python
-@classmethod
-async def _send_error_to_owner(cls, bot, error_report):
-    """Send error report to owner with retry and logging."""
-    if not cls._owner_id:
-        print("No owner ID set for error reporting")
+        # If not on cooldown, set a new cooldown and return True
+        self.set_cooldown(interaction.guild.id, interaction.user, command_name)
+        return True
+    except Exception as e:
+        self.debug.log(f"Error in handle_cooldown: {e}")
+        # Try to send a simpler error message if the fancy one fails
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "An error occurred while processing this command.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "An error occurred while processing this command.",
+                    ephemeral=True
+                )
+        except:
+            pass
         return False
-        
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
-        try:
-            owner = await bot.fetch_user(cls._owner_id)
-            if not owner:
-                print(f"Could not find owner with ID {cls._owner_id}")
-                return False
-                
-            await owner.send(error_report)
-            print(f"Error report sent to owner: {error_report[:50]}...")
-            return True
-            
-        except discord.HTTPException as e:
-            print(f"HTTP error sending to owner (retry {retry_count+1}/{max_retries}): {e}")
-            retry_count += 1
-            await asyncio.sleep(1)  # Wait before retry
-            
-        except Exception as e:
-            print(f"Unexpected error sending to owner: {e}")
-            return False
-    
-    print(f"Failed to send error to owner after {max_retries} attempts")
-    return False
 ```
 
-### Error Recovery Paths
-
-**Issue:** Error recovery paths might not be consistent across commands.
-
-**Files Affected:**
-- Various command implementations
-
-**Fix:**
-Implement a standardized error handling decorator:
+Use this method in all commands with cooldowns:
 
 ```python
-# In error_handler.py
-def command_error_handler(func):
-    """Decorator for standardized command error handling."""
-    @functools.wraps(func)
-    async def wrapper(self, interaction, *args, **kwargs):
-        try:
-            return await func(self, interaction, *args, **kwargs)
-        except Exception as e:
-            # Get command name
-            command_name = func.__name__
-            
-            # Log the error
-            self.debug.log(f"Error in {command_name}: {e}")
-            
-            try:
-                # Send error message to user
-                if hasattr(self, 'send_embed'):
-                    await self.send_embed(
-                        interaction,
-                        "Error",
-                        "An error occurred while processing this command. The bot owner has been notified.",
-                        discord.Color.red(),
-                        ephemeral=True
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "An error occurred while processing this command.",
-                        ephemeral=True
-                    )
-            except:
-                # If response failed, try followup
-                try:
-                    await interaction.followup.send(
-                        "An error occurred while processing this command.",
-                        ephemeral=True
-                    )
-                except:
-                    pass
-            
-            # Report to owner if serious
-            ErrorHandler.handle_command_error(interaction, e)
-            
-            # Rethrow specific exceptions we want to bubble up
-            if isinstance(e, (commands.CommandNotFound, commands.MissingRequiredArgument)):
-                raise
-    
-    return wrapper
-```
-
-Then use this decorator on command methods:
-
-```python
+# In work_cmds.py
 @app_commands.command(name="work", description="Work to earn Medals.")
 @command_error_handler
 async def work(self, interaction: discord.Interaction):
     """Work to earn Medals."""
-    # Command implementation...
+    # Check prison status
+    if not await self.check_prison_status(interaction):
+        return
+        
+    # Check balance challenge status
+    if not await self.check_balance_challenge(interaction):
+        return
+        
+    # Handle cooldown with unified method
+    if not await self.handle_cooldown(interaction, "work", DEFAULT_WORK_COOLDOWN):
+        return
+    
+    # Rest of command logic...
 ```
 
-## Additional Recommendations
+## Implementation Notes
 
-1. **Add Unit Tests**: Create unit tests for critical components like the economy system, permission checks, and data persistence.
+When implementing these fixes:
 
-2. **Performance Monitoring**: Add metrics collection to identify bottlenecks (like slow commands or data operations).
+1. Make the changes incrementally and test each change before moving on to the next.
+2. Be mindful of the circular dependencies when modifying imports.
+3. Maintain consistent error handling across all commands and UI components.
+4. Ensure proper thread safety for all data operations, especially when multiple users might be performing actions simultaneously.
+5. Test edge cases thoroughly, particularly for the balance challenge system and prison/escape mechanics.
 
-3. **Documentation**: Add more comprehensive documentation, especially for the more complex systems like prison breakouts.
+## Project Structure Reference
 
-4. **Configuration Management**: Move more hardcoded values to configuration files for easier adjustment.
+Remember that SennaBot uses a modular architecture with the following key components:
 
-5. **Database Migration**: Consider migrating to a proper database (like SQLite) for larger deployments.
+- **Athena Framework:** Core services and utilities
+- **Cogs:** Command modules organized by functionality
+- **UI Components:** Interactive views for complex interactions
+- **Data Service:** Central data persistence and caching
 
-## Conclusion
-
-This guide covers the main issues identified in the SennaBot codebase. By addressing these concerns, you'll significantly improve the stability, maintainability, and reliability of the bot. Focus on the critical issues first, particularly those related to data integrity and error handling.
+Always consider how your changes will affect the interactions between these components.
