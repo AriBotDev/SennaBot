@@ -11,16 +11,11 @@ from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
-from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
-
-# Default cooldowns and rob settings
-DEFAULT_ROB_COOLDOWN = 300  # 300 seconds
-ROB_VICTIM_COOLDOWN = 600   # 10 minutes protection for victims
-ROB_MIN_AMOUNT = 15         # Minimum amount stolen on success
-
-# Fine amounts
-FINE_MIN = 5
-FINE_MAX = 30
+from ..economy_constants import (
+    ROB_COOLDOWN, ROB_VICTIM_COOLDOWN, ROB_MIN_AMOUNT,
+    FINE_MIN, FINE_MAX, DEATH_SAVINGS_PENALTY
+)
+from ..status.injury_system import get_fail_rate, get_outcome_chance
 
 @CommandRegistry.register_cog("economy")
 class RobCog(EconomyCog):
@@ -121,7 +116,7 @@ class RobCog(EconomyCog):
             )
         
         # Check cooldown using unified handler
-        if not await self.handle_cooldown(interaction, "rob", DEFAULT_ROB_COOLDOWN):
+        if not await self.handle_cooldown(interaction, "rob", ROB_COOLDOWN):
             return
         
         # Get fail rate from injury system

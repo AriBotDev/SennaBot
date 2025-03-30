@@ -9,9 +9,7 @@ from discord.ext import commands
 from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from ..economy_base import EconomyCog
-
-# Default cooldown
-DEFAULT_ROULETTE_COOLDOWN = 420  # 7 minutes
+from ..economy_constants import ROULETTE_COOLDOWN
 
 @CommandRegistry.register_cog("economy")
 class RouletteCog(EconomyCog):
@@ -49,7 +47,7 @@ class RouletteCog(EconomyCog):
             interaction.guild.id, 
             interaction.user, 
             "roulette", 
-            DEFAULT_ROULETTE_COOLDOWN
+            ROULETTE_COOLDOWN
         )
         
         if not can_play:

@@ -11,6 +11,7 @@ from typing import Tuple, Optional
 from athena.cmd_registry import CommandRegistry
 from athena.debug_tools import DebugTools
 from athena.data_service import DataService
+from ..economy_constants import PRISON_COOLDOWN, ESCAPE_COOLDOWN, BREAKOUT_COOLDOWN
 
 # Setup debugger
 debug = DebugTools.get_debugger("prison_system")
@@ -25,11 +26,6 @@ PRISON_TIERS = [
     ("Mortician Wing", 5, 25),
     ("Jaeger Camp", 5, 10)
 ]
-
-# Prison cooldown time in seconds
-PRISON_COOLDOWN = 3600  # 1 hour
-ESCAPE_COOLDOWN = 120   # 2 minutes
-BREAKOUT_COOLDOWN = 300 # 5 minutes
 
 def select_prison_tier() -> Tuple[str, int, int]:
     """

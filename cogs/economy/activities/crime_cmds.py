@@ -11,19 +11,12 @@ from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
-from ..status.injury_system import get_fail_rate, get_outcome_chance, DEATH_SAVINGS_PENALTY
-
-# Default cooldowns and payouts
-DEFAULT_CRIME_COOLDOWN = 75  # 75 seconds
-CRIME_PAYOUT_MIN = 15
-CRIME_PAYOUT_MAX = 35
-CRITICAL_SUCCESS_CHANCE = 2  # 2% chance
-CRITICAL_MULTIPLIER_MIN = 3  # 3x multiplier
-CRITICAL_MULTIPLIER_MAX = 5  # 5x multiplier
-
-# Fine amounts
-FINE_MIN = 5
-FINE_MAX = 30
+from ..economy_constants import (
+    CRIME_COOLDOWN, CRIME_PAYOUT_MIN, CRIME_PAYOUT_MAX,
+    CRITICAL_SUCCESS_CHANCE, CRITICAL_MULTIPLIER_MIN, CRITICAL_MULTIPLIER_MAX,
+    FINE_MIN, FINE_MAX, DEATH_SAVINGS_PENALTY
+)
+from ..status.injury_system import get_fail_rate, get_outcome_chance
 
 @CommandRegistry.register_cog("economy")
 class CrimeCog(EconomyCog):
@@ -80,7 +73,7 @@ class CrimeCog(EconomyCog):
             return
             
         # Check cooldown using the unified handler
-        if not await self.handle_cooldown(interaction, "crime", DEFAULT_CRIME_COOLDOWN):
+        if not await self.handle_cooldown(interaction, "crime", CRIME_COOLDOWN):
             return
         
         # Get fail rate from injury system

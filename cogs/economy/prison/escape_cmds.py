@@ -13,11 +13,9 @@ from athena.cmd_registry import CommandRegistry
 from athena.debug_tools import DebugTools
 from athena.data_service import DataService
 from athena.error_handler import command_error_handler
+from ..economy_constants import ESCAPE_COOLDOWN, DEATH_SAVINGS_PENALTY, PRISON_COOLDOWN
 
 debug = DebugTools.get_debugger("escape_cmds")
-
-# Death penalty for failed escapes (savings percentage)
-DEATH_SAVINGS_PENALTY = 0.25  # 25% of savings
 
 @CommandRegistry.register_cog("economy")
 class EscapeCommands(commands.Cog):

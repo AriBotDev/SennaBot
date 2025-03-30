@@ -11,11 +11,12 @@ from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.debug_tools import DebugTools
 from athena.error_handler import command_error_handler
+from ..economy_constants import FAIL_RATES, OUTCOME_CHANCES, DEATH_SAVINGS_PENALTY
 
 # Setup debugger
 debug = DebugTools.get_debugger("injury_system")
 
-# Injury tier definitions moved from economy_config.py to here
+
 INJURY_TIERS = [
     {
         "name": "Light Injury", 
@@ -70,20 +71,6 @@ INJURY_TIERS = [
         }
     }
 ]
-
-# Define base fail rates here to avoid circular imports
-FAIL_RATES = {
-    "crime": 51,
-    "rob": 55
-}
-
-OUTCOME_CHANCES = {
-    "death": 15,    # 15% chance for death on failure
-    "injury": 65,   # 65% chance for injury on failure
-    "prison": 20    # 20% chance for prison on failure (remainder)
-}
-
-DEATH_SAVINGS_PENALTY = 0.10
 
 def get_injury_tier(injuries: int) -> dict:
     """Determine the injury tier based on the number of injuries"""

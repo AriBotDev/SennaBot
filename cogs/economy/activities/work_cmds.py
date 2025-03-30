@@ -11,27 +11,15 @@ from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.error_handler import command_error_handler
 from ..economy_base import EconomyCog
+from ..economy_constants import (
+    WORK_COOLDOWN, WORK_PAYOUT_MIN, WORK_PAYOUT_MAX,
+    CRITICAL_SUCCESS_CHANCE, CRITICAL_MULTIPLIER_MIN, CRITICAL_MULTIPLIER_MAX
+)
 from ..status.injury_system import get_earning_multiplier
-
-# Default cooldowns and payouts
-DEFAULT_WORK_COOLDOWN = 60  # 60 seconds
-WORK_PAYOUT_MIN = 4
-WORK_PAYOUT_MAX = 12
-CRITICAL_SUCCESS_CHANCE = 2  # 2% chance
-CRITICAL_MULTIPLIER_MIN = 3  # 3x multiplier
-CRITICAL_MULTIPLIER_MAX = 5  # 5x multiplier
 
 @CommandRegistry.register_cog("economy")
 class WorkCog(EconomyCog):
-    """Provides the work command for earning Medals."""
-    
-    def __init__(self, bot):
-        super().__init__(bot)
-        self.debug.log("Initializing WorkCog")
-    
-    def get_app_commands(self):
-        """Get all app commands from this cog."""
-        return [self.work]
+    # [rest of code remains the same, but replace DEFAULT_WORK_COOLDOWN with WORK_COOLDOWN in the work command]
     
     @app_commands.command(name="work", description="Work to earn Medals.")
     @command_error_handler
@@ -46,7 +34,7 @@ class WorkCog(EconomyCog):
             return
             
         # Check cooldown using unified handler
-        if not await self.handle_cooldown(interaction, "work", DEFAULT_WORK_COOLDOWN):
+        if not await self.handle_cooldown(interaction, "work", WORK_COOLDOWN):
             return
         
         # Base wage

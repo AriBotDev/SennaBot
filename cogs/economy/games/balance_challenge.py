@@ -15,12 +15,7 @@ from athena.cmd_registry import CommandRegistry
 from athena.data_service import DataService
 from athena.debug_tools import DebugTools
 from ..economy_base import EconomyCog
-
-# Constants
-SENNABOT_BALANCE = 15000  # Threshold to trigger balance challenge
-CHALLENGE_BET = 1000      # Bet amount for the challenge
-SENNABOT_ID = 1349242668672090253  # SennaBot's user ID
-CHALLENGE_TIMEOUT = 120   # Timeout for challenge interactions
+from ..economy_constants import SENNABOT_BALANCE, CHALLENGE_BET, SENNABOT_ID, CHALLENGE_TIMEOUT
 
 # Blackjack game constants
 SUITS = ['♠️', '♥️', '♦️', '♣️']
