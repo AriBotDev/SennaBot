@@ -639,7 +639,7 @@ class BlackjackGameView(ui.View):
                 except Exception as e:
                     debug.log(f"Error deleting game message: {e}")
                     # Don't throw, continue cleanup
-            
+                
             # Clear any stored references
             for player_id in self.turn_notifications:
                 try:
@@ -648,6 +648,14 @@ class BlackjackGameView(ui.View):
                     notification.stop()
                 except Exception as e:
                     debug.log(f"Error stopping notification: {e}")
+                    
+            # Clear all member references
+            self.game = None
+            self.cog = None
+            self.channel = None
+            self.game_message = None
+            self.turn_messages = []
+            self.turn_notifications = {}
         except Exception as e:
             debug.log(f"Error in game cleanup: {e}")
     

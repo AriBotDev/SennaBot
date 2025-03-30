@@ -83,12 +83,7 @@ class EconomyCog(BotCog):
             user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
             current_balance = user_data.get("pockets", 0)
             
-            # For withdrawals, ensure sufficient funds if we don't allow negative balances
-            allow_negative_pockets = True  # Set to True if we want to allow negative balances
-            if amount < 0 and abs(amount) > current_balance and not allow_negative_pockets:
-                self.debug.log(f"Attempted to withdraw {abs(amount)} from pockets with balance {current_balance}")
-                return current_balance  # Return unchanged balance
-                
+            # For withdrawals, always allow negative balances (allows debt)
             user_data["pockets"] = current_balance + amount
             guild_data = DataService.load_guild_data(guild_id)
             guild_data[str(user.id)] = user_data
@@ -101,12 +96,7 @@ class EconomyCog(BotCog):
             user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
             current_balance = user_data.get("savings", 0)
             
-            # For withdrawals, ensure sufficient funds if we don't allow negative balances
-            allow_negative_savings = True  # Set to True if we want to allow negative balances
-            if amount < 0 and abs(amount) > current_balance and not allow_negative_savings:
-                self.debug.log(f"Attempted to withdraw {abs(amount)} from savings with balance {current_balance}")
-                return current_balance  # Return unchanged balance
-                
+            # For withdrawals, always allow negative balances (allows debt)
             user_data["savings"] = current_balance + amount
             guild_data = DataService.load_guild_data(guild_id)
             guild_data[str(user.id)] = user_data

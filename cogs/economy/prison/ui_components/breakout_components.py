@@ -968,39 +968,42 @@ class JaegerBoxesBreakoutView(ui.View):
         self.stop()
 
     async def on_timeout(self):
+        """Handle timeout of the component."""
         try:
             # Get current guild and user data
             guild_id = self.interaction.guild.id
             user_id = self.interaction.user.id
             user = self.interaction.user
             
-            # Clear pocket money
-            user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
-            
-            pockets_before = self.cog.get_pockets(guild_id, user)
-            self.cog.update_pockets(guild_id, user, -pockets_before)
-                        
-            # Take 25% of savings
-            savings = self.cog.get_savings(guild_id, user)
-            savings_penalty = int(savings * 0.25)
-            
-            # Apply penalty
-            if savings <= 0 or savings_penalty <= 0:
-                self.cog.update_savings(guild_id, user, -75)
-                savings_penalty = 75
-            else:
-                self.cog.update_savings(guild_id, user, -savings_penalty)
-            
-            # Reload guild data after updates
-            guild_data = DataService.load_guild_data(guild_id)
-            user_key = str(user_id)
-            
-            # Free from prison and clear injuries
-            if user_key in guild_data:
-                guild_data[user_key]["prison"] = None
-                guild_data[user_key]["injuries"] = 0
-                guild_data[user_key]["injured"] = False
-                DataService.save_guild_data(guild_id, guild_data)
+            # Thread-safe data operations
+            with DataService.get_guild_lock(guild_id):
+                # Clear pocket money
+                user_data = DataService.get_user_data(guild_id, user.id, user.display_name)
+                
+                pockets_before = self.cog.get_pockets(guild_id, user)
+                self.cog.update_pockets(guild_id, user, -pockets_before)
+                            
+                # Take 25% of savings
+                savings = self.cog.get_savings(guild_id, user)
+                savings_penalty = int(savings * 0.25)
+                
+                # Apply penalty
+                if savings <= 0 or savings_penalty <= 0:
+                    self.cog.update_savings(guild_id, user, -75)
+                    savings_penalty = 75
+                else:
+                    self.cog.update_savings(guild_id, user, -savings_penalty)
+                
+                # Reload guild data after updates
+                guild_data = DataService.load_guild_data(guild_id)
+                user_key = str(user_id)
+                
+                # Free from prison and clear injuries
+                if user_key in guild_data:
+                    guild_data[user_key]["prison"] = None
+                    guild_data[user_key]["injuries"] = 0
+                    guild_data[user_key]["injured"] = False
+                    DataService.save_guild_data(guild_id, guild_data)
             
             embed = discord.Embed(
                 title="Impatient Wolves",
@@ -1025,6 +1028,12 @@ class JaegerBoxesBreakoutView(ui.View):
                     )
                 except:
                     pass
-                    
+                        
         except Exception as e:
             debug.log(f"Error in timeout handler: {e}")
+            
+        finally:
+            # Clean up references
+            self.cog = None
+            self.interaction = None
+            self.target = None
