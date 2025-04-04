@@ -13,7 +13,9 @@ SennaBot/
 ├── config/                   # Configuration files
 ├── data/                     # Data storage
 ├── bot.py                    # Main entry point
-└── config.py                 # Environment and configuration loading
+├── config.py                 # Environment and configuration loading
+├── .env                      # Environment file for tokens and other variables
+└── sennabot-structure.md     # This File
 ```
 
 ## Athena Framework
